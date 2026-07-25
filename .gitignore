@@ -1,0 +1,45 @@
+# --- Secretos / credenciales (NUNCA versionar) ---
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.key
+*.pem
+
+# --- Documentos electrónicos y respuestas generadas (contienen datos/CDC) ---
+factura_*.xml
+fe_*.xml
+nce_*.xml
+nde_*.xml
+auto_*.xml
+autofactura_*.xml
+nr_*.xml
+remision_*.xml
+respuesta_*.xml
+respuesta_evento_*.xml
+evento_*.xml
+*.pdf
+kude_*.png
+kude_*.pdf
+
+# --- Logs y temporales ---
+*.log
+*.tmp
+*~
+
+# --- Wallet Oracle (si se copiara al repo) ---
+Wallet_*/
+cwallet.sso
+ewallet.*
+
+# --- Artefactos de build Go ---
+/firmador
+/firmador.exe
+*.exe
+*.test
+*.out
+bin/
+
+# --- IDE / planes locales ---
+.cursor/plans/

@@ -1,0 +1,49 @@
+---
+description: Convenciones de Go del proyecto firmador (estilo, errores, contexto, concurrencia acotada, memoria/perf). Aplicar en todo el código Go.
+globs: ["**/*.go"]
+alwaysApply: true
+---
+
+# Convenciones de Go — proyecto `firmador`
+
+Basado en [Effective Go](https://go.dev/doc/effective_go), [Go Code Review Comments](https://go.dev/wiki/CodeReviewComments) y [Go Concurrency Patterns: Pipelines](https://go.dev/blog/pipelines).
+
+## Estilo y estructura
+- `gofmt`/`goimports` siempre. Nombres `MixedCaps` (nunca `snake_case`).
+- Siglas con capitalización consistente: `RUC`, `CDC`, `XML`, `QR`, `IVA`, `URL`, `DE`, `CSC`, `NCE`, `NDE`, `KuDE`.
+- Comentarios godoc en todo lo exportado; comentario de paquete adjunto al `package`.
+- Paquetes con nombre corto y descriptivo; nunca `util`/`common`/`helpers`.
+- Las interfaces se definen en el paquete **consumidor**, no en el implementador. Devolver tipos concretos.
+
+## Errores
+- Nunca descartar errores con `_`; siempre manejar o retornar.
+- Envolver con `%w`: `fmt.Errorf("firmar DE: %w", err)`. Discriminar con `errors.Is`/`errors.As`.
+- Strings de error en minúscula, sin puntuación final ni mayúscula inicial.
+- Errores centinela (`var ErrXxx = errors.New(...)`) para casos esperables (p. ej. rechazo por código SIFEN).
+- Sin `panic` en flujo normal. `log.Fatal` solo en `main`, jamás en `internal/sifen` ni librerías.
+
+## API y contexto
+- Funciones de librería **síncronas** por defecto (`BuildDE`, `FirmarYSerializar`, `RenderKuDE`, `CalcularTotales`). La concurrencia la agrega el llamador.
+- Operaciones de red/WS reciben `ctx context.Context` como primer parámetro y respetan cancelación/timeout (`http.NewRequestWithContext`).
+- Validar la entrada (`DocumentInput`, receptor, montos) ANTES de firmar; retornar errores claros.
+
+## Memoria y rendimiento (idiomático, sin `unsafe`)
+- Pasar structs grandes por puntero (`*RDE`). No copiar tipos con métodos sobre `*T` (ojo `bytes.Buffer`).
+- Preasignar slices con capacidad conocida: `make([]GCamItem, 0, n)`. Usar `var s []T` para el slice nil.
+- Reusar `bytes.Buffer` con `Grow`. `sync.Pool` de buffers/hashers SOLO si el profiling (benchmarks + `pprof`) muestra presión de asignación.
+- NO usar `unsafe` ni acceso crudo a memoria en dominio de firma/crypto/XML: el riesgo supera la ganancia. Medir antes de optimizar (`testing.B`).
+
+## Concurrencia
+- SÍ aporta: emisión por lote (construir+firmar+enviar N documentos). Usar worker pool acotado (`golang.org/x/sync/errgroup` con `SetLimit`); cada worker construye su PROPIO `RDE`/`etree.Document`.
+- NO: dentro de un mismo DE la construcción/firma es secuencial. `etree.Document` y el pipeline de firma NO son concurrency-safe: prohibido compartir el mismo DOM entre goroutines.
+- Vida de cada goroutine explícita; cancelación vía `context`; nunca goroutines colgadas en canales.
+- `crypto/rand` es seguro para uso concurrente. No mutar entradas compartidas tras lanzar el trabajo.
+
+## Tests
+- Table-driven con mensajes útiles (got/want).
+- Benchmarks (`testing.B`) para el motor de totales y la firma antes de introducir `sync.Pool`/concurrencia.
+
+## Específico de este proyecto
+- Todo se prueba SOLO en sifen-test; respetar los guardrails de `internal/sifen/safety.go` (`AssertSafeTestURL`).
+- El DOM firmado (`etree`) debe ser exactamente el que se envía y del que se calcula el QR: no re-marshalizar después de firmar (evita rechazo 0141).
+- Los montos usan `github.com/shopspring/decimal`, nunca `float64`.

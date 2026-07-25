@@ -1,0 +1,121 @@
+---
+description: Valores SIFEN TEST/PROD del contribuyente (timbrado, CSC, fechas). Usar al retomar pruebas.
+alwaysApply: true
+---
+
+# SIFEN — Valores TEST / PROD (Villasanti)
+
+Contribuyente: **VILLASANTI VERGARA DANIEL RAMON** · RUC **6038964-8**  
+Solicitud FE: **364010063072** (Aceptada/Aprobada) · Ticket mesa ayuda DNIT: **90929**
+
+## ✅ HOMOLOGACIÓN TEST LOGRADA (22/07/2026)
+Factura electrónica **Aprobada** en sifen-test — `dCodRes=0260` "Autorización del DE satisfactoria" (dProtAut ej. 49749096).
+Secuencia de errores resuelta: 0141→0100→1004→1101→0160→**1107**→1255→1261→1262→2500→**0260**.
+
+### Valores/fixes que destrabaron cada error
+- **1107** (fecha vigencia timbrado): `dFeIniT=2026-07-09` (= FECHA del Form.364 = fecha habilitación SGTM). OJO: el 16/07 aún daba 1107 porque SET no había activado el set de prueba; recién ~22/07 quedó activo.
+- **1255** (dep/dis/ciu no relacionados): códigos geo oficiales (tabla "Código de Referencia Geográfica" XLSX de e-Kuatia). CENTRAL=**12**, CAPIATÁ distrito=**153**, CAPIATÁ ciudad=**3568**. (Antes usaba 11/139/5598, todos mal.)
+- **1261/1262** (actividad económica): `cActEco=74909` + `dDesActEco="OTRAS ACTIVIDADES PROFESIONALES, CIENTÍFICAS Y TÉCNICAS N.C.P."` EXACTA con acentos/coma/punto. `C4_74909` → 0160 (prefijo inválido); `47411` → 1261.
+- **2500** (QR no coincide): receptor CI (no contribuyente) → el QR debe usar **`dNumIDRec`**, no `dRucRec`. Fix en `qr.go` (`ReceptorFieldForQR`) + `main.go`.
+
+## Emisor común
+- RUC: `6038964` · DV: `8`
+- Est: `001` · PunExp: `001`
+- Cert P12: `C:\Users\HP\Documents\dnit-doc\7156160_identity_go.p12`
+- Nunca mezclar CSC/timbrado PROD en sifen-test (ni al revés)
+
+## Ambiente TEST (homologación)
+| Campo | Valor |
+|-------|--------|
+| `SIFEN_ENV` | `test` |
+| Timbrado (`dNumTim`) | `06038964` (RUC sin DV, pad 8) |
+| IdCSC | `0001` (reserva: `0002`) |
+| CSC IdCSC 1 | `ABCD0000000000000000000000000000` |
+| CSC IdCSC 2 | `EFGH0000000000000000000000000000` |
+| `dFeIniT` | **PENDIENTE ticket 90929** (normativa: fecha Solicitud/Form.364 = `2026-07-09`) |
+| Candidatas ya probadas (todas **1107**) | `2026-07-04`–`10`, `2026-07-14`, `2026-07-01`, `2026-06-02`, `2005-02-16`, otras |
+| WS sync | `https://sifen-test.set.gov.py/de/ws/sync/recibe.wsdl` |
+| WS async | `https://sifen-test.set.gov.py/de/ws/async/recibe-lote.wsdl` |
+| QR base | `https://ekuatia.set.gov.py/consultas-test/qr?` |
+
+Notas TEST:
+- Timbrado PROD `18987010` en test → **1101** (inválido), correcto.
+- Timbrado 7 dígitos `6038964` → **0160** (`tdNumTim` exige 8); pad `06038964` es obligatorio.
+- Cada intento regenera CDC + digest + firma (no editar XML firmado a mano).
+- Mail Marandú de insumos: CSC genéricos + timbrado = nº RUC; **no** trae `dFeIniT`.
+- Respuesta mesa ayuda (ticket): probar ±1 día por TZ y timbrado sin pad — **descartado en sifen-test** (08/10→1107; 7 dígitos→0160).
+
+## Ambiente PRODUCCIÓN (no usar hasta homologar)
+| Campo | Valor |
+|-------|--------|
+| Timbrado (`dNumTim`) | `18987010` (Form.364-3, estado ACTIVO) |
+| Fecha inicio vigencia (`dFeIniT`) | `2026-07-14` |
+| Fecha Form.364 (presentación) | `2026-07-09` |
+| IdCSC (último usado en firmador) | `0001` |
+| CSC (último usado en firmador; producción) | `E1CbC6C2d17BFd7809f8e74f1BcE3b4d` |
+| Tipos DE en Form.364 | FE, NCE, NDE · Est `001` / Pun `001` |
+
+## Al recibir respuesta del ticket 90929
+1. Setear `SIFEN_FE_INI_T=YYYY-MM-DD` con la fecha que indique SET para TEST.
+2. Mantener timbrado `06038964` + CSC genérico TEST.
+3. Reenviar solo a sifen-test (`SIFEN_ENV=test`).
+
+## Núcleo SIFEN — motor completado (plan nucleo-sifen-completo)
+
+Refactor del motor `internal/sifen` para soportar todos los tipos de DE. La firma/QR/CDC/WS que lograron 0260 quedaron intactas (mismo Exc-C14N y DOM firmado = enviado).
+
+### Arquitectura
+- `builder.go`: `DocumentInput` + `BuildDE()` arma cualquier tipo de DE (antes cableado en `main.go`). Emisor en struct `Emisor`.
+- `totales.go`: `CalcularTotales(items, moneda)` agrega por tasa/afectación (reemplaza el cálculo manual).
+- `invoice.go`: `ItemInput` + `BuildItem`/`AgregarItem(in, moneda)` con IVA por afectación (antes forzaba 10%).
+- CLI `cmd/api`: flags `-tipo fe|nce|nde -pago -receptor ci|ruc|innominado|extranjero -moneda -ticam -mix -cdc-ref -motivo -kude`.
+- CLI `cmd/evento`: cancelación/inutilización.
+
+### Orden XSD (verificado contra `xsd/DE_v150.xsd` descargado del portal)
+- `gDtipDE`: gCamFE, gCamAE, gCamNCDE, gCamNRE, gCamCond, gCamItem, gTransp.
+- `gCamDEAsoc` (grupo H) es **hijo directo de `DE`** (después de `gTotSub`), NO de `gDtipDE`.
+- `gOpeCom`: `dCondTiCam`/`dTiCam` van después de `dDesMoneOpe` (solo si moneda ≠ PYG).
+
+### IVA / totales (Manual campos E/F) — VALIDADO en sifen-test
+- `iAfecIVA`: 1 gravado, 2 exonerado, 3 exento, 4 parcial. Gravado por ítem: `liqIVA=round(EA008*tasa/(100+tasa))`, `basGrav=EA008-liqIVA` (PYG redondea a 0 decimales).
+- **`dBasExe` (E737) — NT13, error 1921**: por ítem es **`0` para E731=1,2,3** (¡incluido exento!). Solo el gravado parcial (E731=4) lo calcula: `dBasExe=[100*EA008*(100-E733)]/[10000+(E734*E733)]` y `dBasGravIVA=[100*EA008*E733]/[10000+(E734*E733)]`, `liqIVA=basGrav*E734/100`. (Antes ponía `dBasExe=totOpe` en el exento → 1921.)
+- **Subtotales F**: `dSub5/dSub10` = **Σ EA008 completo** de ítems con esa tasa (E731=1 o 4; en parcial va el total del ítem, no solo la parte gravada). `dSubExe` = Σ EA008 de exentos (E731=3). `dSubExo` = Σ EA008 de exonerados (E731=2). Así `dTotOpe = F002+F003+F004+F005`. `dBaseGrav5/10` y `dIVA5/10` sí usan base/liquidación por ítem.
+- Multimoneda: `dTotalGs = dTotGralOpe*dTiCam` solo si `cMoneOpe ≠ PYG` (F023: NADA de `dTotalGs` en PYG).
+- **`dDesMoneOpe` (D016) — error 1206**: descripción EXACTA del catálogo (ISO 4217 **en inglés**): `PYG`="Guarani", `USD`="US Dollar", `BRL`="Brazilian Real", `EUR`="Euro", `ARS`="Argentine Peso". ("Dolar"/"Dólar Americano" → 1206.)
+
+### Receptor (Manual D206 iTipIDRec) — VALIDADO
+- Innominado y Extranjero (B2F, `iTiOpe=4`, `cPaisRec≠PRY`) aprobados (0260).
+- QR: contribuyente→`dRucRec`; resto→`dNumIDRec` (resuelto en el 2500).
+
+### NCE / NDE — VALIDADO (0260)
+- **`dDesMotEmi` (E401) — error 0160**: valor EXACTO. Motivo 1 = **"Devolución y Ajuste de precios"** (A mayúscula). Demás: 2 Devolución, 3 Descuento, 4 Bonificación, 5 Crédito incobrable, 6 Recupero de costo, 7 Recupero de gasto, 8 Ajuste de precio.
+- **`iTipTra`/`dDesTipTra` (D011/D012) — error 1216**: obligatorio SOLO si C002=1 (FE) o 4 (autofactura). En NCE/NDE/remisión **no informar** (tags con `omitempty`; `buildOpeCom` solo los setea para tipo 1/4).
+- `gCamDEAsoc` con `iTipDocAso=1, dDesTipDocAso="Electrónico", dCdCDERef=CDC` de la FE aprobada.
+
+### Autofactura (C002=4) — VALIDADO (0260, dProtAut 49749259)
+- **Receptor = el propio emisor**: contribuyente (D201=1), `dRucRec=dRucEm` (6038964/DV8), `iTiOpe=2` (B2C). CLI arma `NewReceptorRUC(cfg.RUC, cfg.DV, tipCont, nombre, 2, geo)`.
+- **`gCamAE` (E300)** con vendedor no contribuyente: `iNatVen=1`, `iTipIDVen`+`dNumIDVen`, `dNomVen`, ubicación del vendedor y lugar de la transacción.
+- Condición de operación **obligatoria y al contado** (E601=1).
+- **Ítems: `gValorItem` SÍ, `gCamIVA` NO** → si se envía `gCamIVA` da **1901** "Grupo … IVA no requerido". (Ref: item.ts genera gCamIVA solo si `tipoDoc != 4 && != 7`.)
+- **`gTotSub` SÍ va** pero sin IVA: `dTotOpe = dTotGralOpe = Σ dTotOpeItem`, subtotales/IVA en 0 (`calcularTotalesAutofactura`).
+- **`gCamDEAsoc` OBLIGATORIO** (H001, C002=4) → si falta da **2400**. Se usa **constancia electrónica**: `iTipDocAso=3, dDesTipDocAso="Constancia Electrónica", iTipCons=1, dDesTipCons="Constancia de no ser contribuyente"` (`NewDEAsocConstancia`). `dNumCons`/`dNumControl` solo si `iTipCons=2` (microproductores).
+
+### Nota de remisión (C002=7) — VALIDADO (0260, dProtAut 49749261)
+- **NO lleva `gOpeCom`** (D010) → si va da **1201** "Grupo … operación comercial no permitido". (Ref: `generateDatosGeneralesInherentesOperacion` hace `return` si tipoDoc=7.)
+- **NO lleva `gTotSub`** (F, "no informar si C002=7"), **NO lleva `gCamCond`**, y los **ítems no llevan `gValorItem` ni `gCamIVA`** (`BuildItemRemision`: solo dCodInt/dDesProSer/cUniMed/dCantProSer).
+- **`gCamNRE` (E500)**: `iMotEmiNR` (1 Traslado por ventas…), `iRespEmiNR` (1 Emisor…), `dKmR` (1-99999). Motivo 1 sin doc asociado ⇒ **`dFecEm` OBLIGATORIO** (E506) o da **2605**.
+- **`gTransp` (E900) obligatorio**: `iTipTrans` (1 Propio/2 Tercero) + `iModTrans` (1 Terrestre…) + `iRespFlete` (1-4) + `dIniTras`/`dFinTras` + `gCamSal` + `gCamEnt` + `gVehTras` (dTiVehTras acorde a modalidad, ej. "CAMION"; dTipIdenVeh=2 → dNroMatVeh) + `gCamTrans`.
+- **`dNomTrans` (E982) máx 60 chars** → la razón social larga de homologación da **0160** "valor … inválido"; usar nombre corto.
+- QR de remisión: `dTotGralOpe=0`, `dTotIVA=0` (regla 13.8.4: si no existen, completar con 0).
+
+### Cambios de tipos Go (soporte auto/remisión)
+- `GCamItem.GValorItem` y `.GCamIVA` → punteros con `omitempty`; `DE.GTotSub` → puntero con `omitempty`; `GDatGralOpe.GOpeCom` ya era puntero. Flags CLI: `-tipo auto` y `-tipo nr`.
+
+### Eventos (siRecepEvento) — VALIDADO: `dCodRes=0600` "Evento registrado correctamente"
+- Estructura: `rEnviEventoDe > dId + dEvReg > gGroupGesEve[xmlns:xsi + xsi:schemaLocation="...sifen/xsd siRecepEvento_v150.xsd"] > rGesEve > (rEve[Id] + Signature)`. Firma sobre `rEve` (URI=`#Id`), enveloped+exc-c14n con xmlns SIFEN inyectado (igual que el DE).
+- **`rEve` NO lleva `dTiGDE`** (solo `dFecFirma`, `dVerFor`, `gGroupTiEvt`). Tenerlo → **0160 "XML Mal Formado"**.
+- `rGeVeCan`: `Id`(=CDC) + `mOtEve`(5-500). `rGeVeInu`: timbrado+est+punExp+rango(≤1000)+iTiDE+mOtEve.
+- WS eventos TEST en `SIFEN_WS_EVENTO`. Respuesta llega en `rRetEnviEventoDe/gResProcEVe` (dProtAut ej. 1151875).
+
+### ✅ Cobertura validada en sifen-test (22/07/2026, CSC de prueba)
+**Todos los tipos de DE aprobados (0260) + evento cancelación (0600):** FE base, FE IVA mixto 10/5/exento, FE USD multimoneda, receptor innominado, receptor extranjero (B2F), **autofactura (gCamAE + constancia)**, NCE referenciando FE, **nota de remisión (gCamNRE + gTransp)**, y evento de cancelación. Catálogos de referencia: repo `TIPS-SA/facturacionelectronicapy-xmlgen` (monedas, motivos, transporte, constancias). Flags CLI: `-tipo fe|auto|nce|nde|nr`.
