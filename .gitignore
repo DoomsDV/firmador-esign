@@ -43,3 +43,5 @@ bin/
 
 # --- IDE / planes locales ---
 .cursor/plans/
+.cursor/mcp.json
+.cursor/rules/oracle-esign-dev.mdc
