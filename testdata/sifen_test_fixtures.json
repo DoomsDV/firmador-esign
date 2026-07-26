@@ -1,0 +1,220 @@
+{
+  "_meta": {
+    "descripcion": "Respaldo consolidado de TODOS los valores SIFEN-test que logran 0260 en homologacion. Fase 1 del plan esign_backend_sifen. Fuente: cmd/api/main.go, internal/config/config.go, .env.example, .cursor/rules/sifen-valores-test-prod.mdc.",
+    "contribuyente": "VILLASANTI VERGARA DANIEL RAMON",
+    "solicitudFE": "364010063072",
+    "ticketMesaAyuda": "90929",
+    "homologacionTest": "2026-07-22 (dCodRes=0260 Autorizacion del DE satisfactoria)",
+    "generadoPor": "Fase 1 - respaldo de datos de prueba",
+    "advertencia": "El nombre del emisor en TEST es fijo (exigido por DNIT), no la razon social real. Nunca mezclar CSC/timbrado PROD en sifen-test."
+  },
+  "ambiente": "test",
+  "emisor": {
+    "ruc": "6038964",
+    "dv": "8",
+    "iTipCont": 1,
+    "cTipReg": 8,
+    "razonSocialReal": "VILLASANTI VERGARA DANIEL RAMON",
+    "nombreEmisorTest": "DE generado en ambiente de prueba - sin valor comercial ni fiscal",
+    "direccion": "ROJAS CAÑADA, SAN JUAN-FRACCION. 9234",
+    "numCasa": "0",
+    "departamento": { "cod": 12, "desc": "CENTRAL" },
+    "distrito": { "cod": 153, "desc": "CAPIATA" },
+    "ciudad": { "cod": 3568, "desc": "CAPIATA" },
+    "telefono": "0986541799",
+    "email": "DANIELVILLASANTI2132@GMAIL.COM",
+    "actividadEconomica": {
+      "cod": "74909",
+      "desc": "OTRAS ACTIVIDADES PROFESIONALES, CIENTÍFICAS Y TÉCNICAS N.C.P."
+    },
+    "establecimiento": "001",
+    "puntoExpedicion": "001"
+  },
+  "timbrado": {
+    "numero": "06038964",
+    "fechaInicioVigencia": "2026-07-09",
+    "notas": "TEST = RUC sin DV pad a 8 digitos (tdNumTim exige 8). 7 digitos -> 0160. Timbrado PROD en test -> 1101."
+  },
+  "csc": {
+    "idCSC": "0001",
+    "csc": "ABCD0000000000000000000000000000",
+    "idCSC_reserva": "0002",
+    "csc_reserva": "EFGH0000000000000000000000000000",
+    "notas": "CSC genericos de TEST (Marandu). NUNCA usar CSC de produccion en test."
+  },
+  "certificado": {
+    "path": "C:\\Users\\HP\\Documents\\dnit-doc\\7156160_identity_go.p12",
+    "passwordEnv": "CERT_P12_PASSWORD"
+  },
+  "endpoints": {
+    "wsSync": "https://sifen-test.set.gov.py/de/ws/sync/recibe.wsdl",
+    "wsAsync": "https://sifen-test.set.gov.py/de/ws/async/recibe-lote.wsdl",
+    "wsEvento": "https://sifen-test.set.gov.py/de/ws/eventos/evento.wsdl",
+    "qrBase": "https://ekuatia.set.gov.py/consultas-test/qr?"
+  },
+  "receptoresDemo": {
+    "ci": {
+      "tipo": "ci",
+      "iTipIDRec": 2,
+      "numDocumento": "1234567",
+      "nombre": "CLIENTE DE PRUEBA",
+      "geo": {
+        "dir": "DIRECCION PARTICULAR", "numCas": "123",
+        "dep": { "cod": 12, "desc": "CENTRAL" },
+        "dis": { "cod": 153, "desc": "CAPIATA" },
+        "ciu": { "cod": 3568, "desc": "CAPIATA" },
+        "tel": "0981111111", "email": "cliente@email.com"
+      },
+      "qrField": "dNumIDRec"
+    },
+    "ruc": {
+      "tipo": "ruc",
+      "ruc": "80012345",
+      "dv": 6,
+      "iTipCont": 2,
+      "nombre": "EMPRESA CLIENTE SA",
+      "iTiOpe": 1,
+      "geo": {
+        "dir": "DIRECCION PARTICULAR", "numCas": "123",
+        "dep": { "cod": 12, "desc": "CENTRAL" },
+        "dis": { "cod": 153, "desc": "CAPIATA" },
+        "ciu": { "cod": 3568, "desc": "CAPIATA" },
+        "tel": "0981111111", "email": "cliente@email.com"
+      },
+      "qrField": "dRucRec"
+    },
+    "innominado": {
+      "tipo": "innominado",
+      "nombre": "Sin Nombre",
+      "notas": "Receptor innominado aprobado (0260)."
+    },
+    "extranjero": {
+      "tipo": "extranjero",
+      "cPaisRec": "BRA",
+      "desPaisRec": "Brasil",
+      "iTipIDRec": "pasaporte",
+      "numDocumento": "AB1234567",
+      "nombre": "CLIENTE DEL EXTERIOR",
+      "iTiOpe": 4,
+      "geo": {
+        "dir": "DIRECCION PARTICULAR", "numCas": "123",
+        "dep": { "cod": 12, "desc": "CENTRAL" },
+        "dis": { "cod": 153, "desc": "CAPIATA" },
+        "ciu": { "cod": 3568, "desc": "CAPIATA" },
+        "tel": "0981111111", "email": "cliente@email.com"
+      },
+      "qrField": "dNumIDRec"
+    }
+  },
+  "itemsDemo": {
+    "descripcionBase": "DOCUMENTO ELECTRÓNICO SIN VALOR COMERCIAL NI FISCAL - GENERADO EN AMBIENTE DE PRUEBA",
+    "feBase": [
+      { "codigo": "SERV-001", "cantidad": 1, "precioUnitario": 150000, "afectacionIVA": 1, "tasaIVA": 10 }
+    ],
+    "feMixto": [
+      { "codigo": "SERV-010", "cantidad": 1, "precioUnitario": 110000, "afectacionIVA": 1, "tasaIVA": 10 },
+      { "codigo": "SERV-005", "cantidad": 1, "precioUnitario": 105000, "afectacionIVA": 1, "tasaIVA": 5 },
+      { "codigo": "SERV-EXE", "cantidad": 1, "precioUnitario": 50000, "afectacionIVA": 3, "tasaIVA": 0 }
+    ],
+    "remision": [
+      { "codigo": "MERC-001", "descripcion": "MERCADERIA SIN VALOR COMERCIAL NI FISCAL - GENERADA EN AMBIENTE DE PRUEBA", "cantidad": 2, "unidadMedida": 77, "desUnidadMedida": "UNI" }
+    ]
+  },
+  "condicionPago": {
+    "contado": { "iCondOpe": 1, "pago": "efectivo PYG 150000" },
+    "credito": { "iCondOpe": 2, "plazo": "28 dias" }
+  },
+  "monedas": {
+    "PYG": "Guarani",
+    "USD": "US Dollar",
+    "BRL": "Brazilian Real",
+    "EUR": "Euro",
+    "ARS": "Argentine Peso",
+    "notas": "dDesMoneOpe (D016) debe ser EXACTO del catalogo ISO 4217 en ingles (error 1206)."
+  },
+  "autofactura": {
+    "receptor": "el propio emisor (contribuyente D201=1, dRucRec=dRucEm, iTiOpe=2)",
+    "vendedor": { "iNatVen": 1, "iTipIDVen": "cedula PY", "dNumIDVen": "2545999", "dNomVen": "VENDEDOR NO CONTRIBUYENTE DE PRUEBA" },
+    "condicion": "contado obligatorio (E601=1)",
+    "docAsociado": { "iTipDocAso": 3, "dDesTipDocAso": "Constancia Electrónica", "iTipCons": 1, "dDesTipCons": "Constancia de no ser contribuyente" },
+    "notas": "gCamAE con vendedor no contribuyente. Items: gValorItem SI, gCamIVA NO (si va -> 1901). gCamDEAsoc OBLIGATORIO (si falta -> 2400).",
+    "dProtAutValidado": "49749259"
+  },
+  "notaRemision": {
+    "gCamNRE": { "iMotEmiNR": 1, "iRespEmiNR": 1, "dKmR": 10, "dFecEm": "obligatorio (E506) si motivo 1 sin doc asociado" },
+    "transporte": {
+      "iTipTrans": 1, "dDesTipTrans": "Propio",
+      "iModTrans": 1, "dDesModTrans": "Terrestre",
+      "iRespFlete": 1,
+      "vehiculo": { "dTiVehTras": "CAMION", "dMarVeh": "SCANIA", "dTipIdenVeh": 2, "dNroMatVeh": "ABC123" },
+      "transportista": { "iNatTrans": 1, "dNomTrans": "TRANSPORTISTA DE PRUEBA SA (max 60 chars, si no -> 0160)" }
+    },
+    "notas": "NO lleva gOpeCom (-> 1201), NO lleva gTotSub, NO lleva gCamCond. Items sin gValorItem ni gCamIVA. QR: dTotGralOpe=0, dTotIVA=0.",
+    "dProtAutValidado": "49749261"
+  },
+  "notaCreditoDebito": {
+    "motivos": {
+      "1": "Devolución y Ajuste de precios",
+      "2": "Devolución",
+      "3": "Descuento",
+      "4": "Bonificación",
+      "5": "Crédito incobrable",
+      "6": "Recupero de costo",
+      "7": "Recupero de gasto",
+      "8": "Ajuste de precio"
+    },
+    "docAsociado": { "iTipDocAso": 1, "dDesTipDocAso": "Electrónico", "dCdCDERef": "CDC de la FE aprobada" },
+    "notas": "dDesMotEmi (E401) valor EXACTO o error 0160. iTipTra/dDesTipTra NO se informan en NCE/NDE (error 1216)."
+  },
+  "evento": {
+    "wsEnv": "SIFEN_WS_EVENTO",
+    "cancelacion": { "grupo": "rGeVeCan", "campos": "Id(=CDC) + mOtEve(5-500)" },
+    "inutilizacion": { "grupo": "rGeVeInu", "campos": "timbrado+est+punExp+rango(<=1000)+iTiDE+mOtEve" },
+    "dCodResValidado": "0600 (Evento registrado correctamente)",
+    "dProtAutValidado": "1151875",
+    "notas": "rEve NO lleva dTiGDE (si va -> 0160). Firma sobre rEve (URI=#Id), enveloped+exc-c14n."
+  },
+  "casosValidados0260": [
+    "FE base (10%)",
+    "FE IVA mixto 10/5/exento",
+    "FE USD multimoneda",
+    "receptor CI (no contribuyente)",
+    "receptor RUC (contribuyente)",
+    "receptor innominado",
+    "receptor extranjero (B2F)",
+    "autofactura (gCamAE + constancia)",
+    "NCE referenciando FE",
+    "NDE referenciando FE",
+    "nota de remision (gCamNRE + gTransp)",
+    "evento cancelacion (0600)"
+  ],
+  "erroresResueltos": {
+    "1107": "dFeIniT=2026-07-09 (fecha Form.364/habilitacion SGTM)",
+    "1255": "codigos geo oficiales CENTRAL=12, CAPIATA distrito=153, CAPIATA ciudad=3568",
+    "1261_1262": "cActEco=74909 + dDesActEco exacta con acentos",
+    "2500": "receptor CI -> QR usa dNumIDRec, no dRucRec",
+    "1206": "dDesMoneOpe exacto ISO 4217 en ingles",
+    "1921": "dBasExe por item = 0 para E731=1,2,3",
+    "1901": "autofactura: items sin gCamIVA",
+    "2400": "autofactura: gCamDEAsoc obligatorio",
+    "1201": "remision: sin gOpeCom",
+    "0160_evento": "rEve sin dTiGDE"
+  },
+  "valoresProd": {
+    "_advertencia": "NO usar hasta homologar produccion. El bloqueo anti-produccion (safety.go) es intencional.",
+    "timbrado": "18987010",
+    "fechaInicioVigencia": "2026-07-14",
+    "fechaForm364": "2026-07-09",
+    "idCSC": "0001",
+    "csc": "E1CbC6C2d17BFd7809f8e74f1BcE3b4d",
+    "tiposDE": ["FE", "NCE", "NDE"],
+    "establecimiento": "001",
+    "puntoExpedicion": "001",
+    "endpoints": {
+      "wsSync": "https://sifen.set.gov.py/de/ws/sync/recibe.wsdl",
+      "wsAsync": "https://sifen.set.gov.py/de/ws/async/recibe-lote.wsdl",
+      "wsEvento": "https://sifen.set.gov.py/de/ws/eventos/evento.wsdl",
+      "qrBase": "https://ekuatia.set.gov.py/consultas/qr?"
+    }
+  }
+}

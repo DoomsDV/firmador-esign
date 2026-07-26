@@ -1,0 +1,63 @@
+---
+description: Plan/roadmap del backend multi-tenant esign (firmador SIFEN + Oracle/ORDS). Modelo de datos estilo Stripe, VPD por client_id, ambientes por API key.
+alwaysApply: true
+---
+
+# Plan: firmador SIFEN -> API multi-tenant (Go) + Oracle `esign` / ORDS
+
+Objetivo: convertir el motor `firmador` (Go, single-tenant, datos Villasanti hardcodeados) en una API multi-tenant. La base `esign` (Oracle ADB, misma instancia que `aoxdev`) provee auth, tenants, credenciales por ambiente y certificados. Go firma/envia a SIFEN eligiendo test/prod segun el prefijo de la API key. Frontend FUERA de alcance (solo backend + BD).
+
+Archivo de plan detallado: `c:\Users\HP\.cursor\plans\esign_backend_sifen_4337f9de.plan.md`.
+
+## Decisiones cerradas
+- Modelo de datos estilo Stripe SaaS (NO se copia el modelo de `aox-dev`; este solo es referencia tecnica de JWT/ORDS).
+- Certificado `.p12`: BLOB cifrado a nivel de app (AES-256-GCM, clave maestra `ESIGN_MASTER_KEY` en env de Go). Oracle nunca ve el claro; guarda solo ciphertext+nonce. Password del P12 tambien cifrado.
+- API keys: se guardan como HASH + prefijo visible; la key completa se muestra 1 sola vez (patron Stripe).
+- Aislamiento: VPD (DBMS_RLS) + application context `ESIGN_CTX.CLIENT_ID` como defensa en profundidad, ADEMAS de filtro explicito por `client_id` en cada paquete. (Verificado: `aoxdev` tiene 0 VPD y aisla solo por columna; `esign` mejora esto.)
+- Ambiente: lo determina SOLO el prefijo de la API key (`sk_test_` -> SIFEN-test, `sk_prod_` -> SIFEN-prod). Go es agnostico a la UI.
+- No re-marshalizar el DOM firmado (evitar 0141); NO tocar el pipeline firma/QR/CDC que ya logra 0260. Montos con `shopspring/decimal`.
+
+## Modelo de datos (3 niveles jerarquicos)
+Nucleo estilo Stripe (separa PERSONA de NEGOCIO):
+- `users`: persona que hace login (email, password_hash+salt). CERO datos financieros/SIFEN.
+- `client`: negocio/cuenta = entidad legal, EJE de toda la VPD (`id_client`). Aqui: business_name, ruc, dv, status, `sk_test`/`sk_prod` (hash+prefijo) y certificado cifrado (`cert_*`). Tokens y cert pertenecen al CLIENTE, nunca al usuario.
+- `client_user`: membresia persona<->negocio con `role` (`owner` | `developer` | `analyst`). Un email puede tener varios clients o ser invitado a un tercero.
+
+Config SIFEN colgando de `client` (jerarquia Cliente -> Establecimiento -> Punto):
+- `client_emisor` (1:1): identidad fiscal a nivel contribuyente (tipo_contribuyente, regimen, nombre_fantasia). SIN direccion/est/punto.
+- `client_emisor_actividad` (1:N): actividades economicas (cActEco/dDesActEco).
+- `client_establecimiento` (1:N por client): sucursal con SU direccion/geo (dep/dis/ciu), codigo `001`... `UNIQUE(client_id, codigo)`.
+- `client_punto_expedicion` (1:N por establecimiento): cajas, codigo `001`... `UNIQUE(establecimiento_id, codigo)`.
+- `client_sifen_env` (por ambiente TEST/PROD): num_timbrado, fecha_inicio_vigencia, id_csc, csc cifrado.
+- `document_sequence`: correlativo por `(client, ambiente, establecimiento, punto, tipo_de)` (numeracion sin huecos).
+- `document`, `document_xml`, `document_event`, `api_log`, `user_session`, `app_parameter`.
+
+Todas las tablas de dominio llevan `client_id` para la VPD (`client_id = sys_context('ESIGN_CTX','CLIENT_ID')`).
+
+## Regla normativa SIFEN validada (Manual Tecnico v150 + xsd/DE_v150.xsd)
+- `dEst`/`dPunExp` viven en el grupo timbrado (`gDTim`/gTimb), NO en `gEmis`.
+- `dDirEmi` (D107) = "Direccion del local donde se emite el DE": geo del ESTABLECIMIENTO emisor, no de casa matriz. `cDepEmi`/`cDisEmi`/`cCiuEmi` son del local. `gEmis` incluso trae `dDenSuc` (denominacion de la sucursal).
+- Por eso la geo se guarda por establecimiento; el cliente solo manda `establecimiento`+`punto`, Go completa `gEmis` desde `client_establecimiento`.
+- La geo debe coincidir con lo registrado en el RUC/SET (si no -> error 1255) y el trio timbrado+est+punto debe estar habilitado.
+
+## Roles (control de capacidades, ademas de VPD por filas)
+- `owner`: todo. `developer`: ve/rota API keys y emite. `analyst`: SOLO lee documentos; 403 en certificado y API keys. El BLOB del cert nunca se expone al panel, solo cifrado al servicio interno de Go.
+
+## Contrato Go (emision) - payload estandar SET
+```json
+{ "tipo": "fe", "condicion": "contado",
+  "datos_operacion": { "establecimiento": "001", "punto_expedicion": "002" },
+  "receptor": { "tipo": "ci|ruc|innominado|extranjero", "documento": "...", "nombre": "..." },
+  "moneda": "PYG", "items": [ { "codigo": "...", "descripcion": "...", "cantidad": 1, "precioUnitario": 150000, "afectacionIVA": 1, "tasaIVA": 10 } ] }
+```
+Flujo Go: sk_ de la cabecera -> resuelve client_id+ambiente via ORDS -> cruza establecimiento/punto contra las tablas del client -> toma geo del establecimiento para gEmis -> pide numDoc correlativo -> genera CDC, firma con cert descifrado, envia a SET -> registra estado en ORDS.
+
+## ORDS
+- Modulo `esign` (`/api/v1/`, JWT panel, claims client_id/role).
+- Modulo `esign_internal` (`/internal/v1/`, header `X-Service-Token`): `context` (api key->client+config+establecimientos), `next-number`, `certificate` (blobs cifrados), `documents`, `logs`.
+
+## Fases (una por sesion/PR)
+1. Fixtures: `testdata/sifen_test_fixtures.json` con todos los datos SIFEN-test que hoy logran 0260 (emisor, geo, timbrado 06038964, dFeIniT 2026-07-09, CSC, actividad 74909, endpoints, receptores demo, valores prod). Prioridad 1, antes de tocar codigo.
+2. BD + ORDS: tablas, VPD por client_id, paquetes `PKG_ESIGN_UTIL/SESSION/JWT/AUTH_API/CLIENT_API/APIKEY_API/CERT_API/DOCUMENT_API`, modulos ORDS, install_all.sql.
+3. Refactor Go: `cmd/server` HTTP + middleware API key; `internal/tenant` (ResolveContext/GetCertificate + descifrado AES-GCM); extraer `tenant.Config` del hardcode; generalizar `safety.go` a `AssertSafeURL(url, env)`; endpoints `/v1/documents`, cancel, inutilizacion.
+4. Contrato API panel (solo diseno): `docs/api-contract.md` con endpoints, payloads y estados (`BORRADOR->FIRMADO->ENVIADO->APROBADO|RECHAZADO`, `CANCELADO`).

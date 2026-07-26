@@ -17,44 +17,72 @@ import (
 
 const soapNS = "http://www.w3.org/2003/05/soap-envelope"
 
-// Client SOAP mTLS hacia sifen-test únicamente.
+// Client SOAP mTLS hacia SIFEN. El ambiente (Env) fija qué hosts son válidos:
+// una instancia de test jamás pega a producción y viceversa (AssertSafeURL).
 type Client struct {
 	HTTP    *http.Client
 	SyncURL string
+	Env     Environment
 }
 
-// NewTestClient crea cliente HTTP con mTLS; SyncURL debe ser sifen-test.
+// NewTestClient crea cliente HTTP con mTLS contra sifen-test (compatibilidad CLIs).
 func NewTestClient(p12Path, p12Password, syncURL string) (*Client, error) {
-	if err := AssertSafeTestURL(syncURL); err != nil {
-		return nil, err
-	}
-
-	tlsCert, err := loadTLSCertificate(p12Path, p12Password)
+	tlsCert, err := loadTLSCertificateFromFile(p12Path, p12Password)
 	if err != nil {
 		return nil, err
 	}
+	return newClient(tlsCert, syncURL, EnvTest)
+}
 
+// NewClient crea cliente HTTP con mTLS para el ambiente indicado, cargando el .p12
+// desde disco. syncURL debe pertenecer al ambiente (se valida con AssertSafeURL).
+func NewClient(env Environment, p12Path, p12Password, syncURL string) (*Client, error) {
+	tlsCert, err := loadTLSCertificateFromFile(p12Path, p12Password)
+	if err != nil {
+		return nil, err
+	}
+	return newClient(tlsCert, syncURL, env)
+}
+
+// NewClientFromP12Bytes crea el cliente mTLS con el .p12 ya en memoria (multi-tenant:
+// el certificado llega descifrado, nunca desde disco).
+func NewClientFromP12Bytes(env Environment, p12Data []byte, p12Password, syncURL string) (*Client, error) {
+	tlsCert, err := loadTLSCertificateFromBytes(p12Data, p12Password)
+	if err != nil {
+		return nil, err
+	}
+	return newClient(tlsCert, syncURL, env)
+}
+
+func newClient(tlsCert tls.Certificate, syncURL string, env Environment) (*Client, error) {
+	if err := AssertSafeURL(syncURL, env); err != nil {
+		return nil, err
+	}
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{
 			Certificates: []tls.Certificate{tlsCert},
 			MinVersion:   tls.VersionTLS12,
 		},
 	}
-
 	return &Client{
 		HTTP: &http.Client{
 			Timeout:   60 * time.Second,
 			Transport: tr,
 		},
 		SyncURL: syncURL,
+		Env:     env,
 	}, nil
 }
 
-func loadTLSCertificate(path, password string) (tls.Certificate, error) {
+func loadTLSCertificateFromFile(path, password string) (tls.Certificate, error) {
 	p12Data, err := os.ReadFile(path)
 	if err != nil {
 		return tls.Certificate{}, fmt.Errorf("leer p12: %w", err)
 	}
+	return loadTLSCertificateFromBytes(p12Data, password)
+}
+
+func loadTLSCertificateFromBytes(p12Data []byte, password string) (tls.Certificate, error) {
 	key, leaf, cas, err := pkcs12.DecodeChain(p12Data, password)
 	if err != nil {
 		return tls.Certificate{}, fmt.Errorf("decode p12: %w", err)
@@ -74,12 +102,20 @@ func loadTLSCertificate(path, password string) (tls.Certificate, error) {
 	return tc, nil
 }
 
-// RecibirDESync envía un rDE firmado al WS síncrono de test (siRecepDE).
+// env devuelve el ambiente del cliente (default test para clientes preexistentes).
+func (c *Client) env() Environment {
+	if c.Env == "" {
+		return EnvTest
+	}
+	return c.Env
+}
+
+// RecibirDESync envía un rDE firmado al WS síncrono (siRecepDE) del ambiente.
 func (c *Client) RecibirDESync(ctx context.Context, envioID int64, rdeXML []byte) (statusCode int, respBody []byte, err error) {
 	if c == nil || c.HTTP == nil {
 		return 0, nil, fmt.Errorf("cliente SOAP nulo")
 	}
-	if err := AssertSafeTestURL(c.SyncURL); err != nil {
+	if err := AssertSafeURL(c.SyncURL, c.env()); err != nil {
 		return 0, nil, err
 	}
 
@@ -97,7 +133,7 @@ func (c *Client) RecibirEventoSync(ctx context.Context, envioID int64, eventoURL
 	if c == nil || c.HTTP == nil {
 		return 0, nil, fmt.Errorf("cliente SOAP nulo")
 	}
-	if err := AssertSafeTestURL(eventoURL); err != nil {
+	if err := AssertSafeURL(eventoURL, c.env()); err != nil {
 		return 0, nil, err
 	}
 
@@ -110,7 +146,7 @@ func (c *Client) RecibirEventoSync(ctx context.Context, envioID int64, eventoURL
 
 // postSOAP hace el POST SOAP 1.2 con mTLS y respeta el contexto.
 func (c *Client) postSOAP(ctx context.Context, url string, envelope []byte) (int, []byte, error) {
-	if err := AssertSafeTestURL(url); err != nil {
+	if err := AssertSafeURL(url, c.env()); err != nil {
 		return 0, nil, err
 	}
 

@@ -23,7 +23,8 @@ type QRParams struct {
 	DigestValue string // Base64 del DigestValue de la firma
 	IdCSC       string
 	CSC         string
-	QRBase      string // debe ser consultas-test; vacío → QRBaseURLTest
+	QRBase      string      // vacío → base oficial del ambiente (Env)
+	Env         Environment // "" → EnvTest (compatibilidad con los CLIs)
 }
 
 // BuildQueryString arma el query del Paso 1 (sin CSC, sin cHashQR).
@@ -79,11 +80,15 @@ func BuildCarQR(p QRParams) (string, error) {
 		return "", fmt.Errorf("falta CSC para el QR")
 	}
 
+	env := p.Env
+	if env == "" {
+		env = EnvTest
+	}
 	base := p.QRBase
 	if base == "" {
-		base = QRBaseURLTest
+		base = EndpointsFor(env).QRBase
 	}
-	if err := AssertSafeTestURL(base); err != nil {
+	if err := AssertSafeURL(base, env); err != nil {
 		return "", err
 	}
 
