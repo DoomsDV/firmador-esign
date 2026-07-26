@@ -383,6 +383,26 @@ BEGIN
     htp.p(l_out);
 END;]');
 
+  -- Listado por POST con filtros en el body (los query-params no ligan de forma fiable en
+  -- esta instancia ORDS -> ORDS-25001; el patron body_text es el mismo del modulo interno).
+  ords.define_template(p_module_name => 'esign', p_pattern => 'documents/search');
+  ords.define_handler(
+    p_module_name => 'esign', p_pattern => 'documents/search', p_method => 'POST',
+    p_source_type => ords.source_type_plsql,
+    p_source => q'[
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+    l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION');
+BEGIN
+    pkg_esign_document_api.pr_list_documents(
+        p_client_id => pkg_esign_util.fn_get_client_id_from_jwt(l_auth),
+        p_body      => l_body,
+        p_out       => l_out
+    );
+    htp.p(l_out);
+END;]');
+
   ords.define_template(p_module_name => 'esign', p_pattern => 'documents/:cdc');
   ords.define_handler(
     p_module_name => 'esign', p_pattern => 'documents/:cdc', p_method => 'GET',
@@ -416,6 +436,24 @@ BEGIN
         p_out       => l_out
     );
     htp.prn(l_out);
+END;]');
+
+  ords.define_template(p_module_name => 'esign', p_pattern => 'documents/:cdc/retry');
+  ords.define_handler(
+    p_module_name => 'esign', p_pattern => 'documents/:cdc/retry', p_method => 'POST',
+    p_source_type => ords.source_type_plsql,
+    p_source => q'[
+DECLARE
+    l_out  CLOB;
+    l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION');
+BEGIN
+    pkg_esign_document_api.pr_request_retry(
+        p_client_id => pkg_esign_util.fn_get_client_id_from_jwt(l_auth),
+        p_cdc       => :cdc,
+        p_out       => l_out
+    );
+    COMMIT;
+    htp.p(l_out);
 END;]');
 
   COMMIT;

@@ -18,6 +18,11 @@ CREATE TABLE document (
   prot_aut         VARCHAR2(30),
   mensaje_res      VARCHAR2(1000),
   fecha_emision    TIMESTAMP(6) WITH TIME ZONE,
+  -- Reenvio de FIRMADO (fallo transitorio de envio a SET): el panel marca retry_requested
+  -- y un worker en Go reenvia el XML firmado. Ver PKG_ESIGN_DOCUMENT_API.pr_request_retry.
+  retry_requested  NUMBER(1) DEFAULT 0 NOT NULL,
+  retry_count      NUMBER DEFAULT 0 NOT NULL,
+  last_retry_at    TIMESTAMP(6) WITH TIME ZONE,
   created_at       TIMESTAMP(6) WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
   CONSTRAINT fk_document_client FOREIGN KEY (client_id) REFERENCES client (id_client),
   CONSTRAINT uq_document_cdc    UNIQUE (cdc),

@@ -10,6 +10,10 @@ CREATE OR REPLACE PACKAGE pkg_esign_document_api AS
   PROCEDURE pr_get_document(p_client_id IN NUMBER, p_cdc IN VARCHAR2, p_out OUT CLOB);
   PROCEDURE pr_get_xml(p_client_id IN NUMBER, p_cdc IN VARCHAR2, p_out OUT CLOB);
 
+  -- Marca un documento FIRMADO para reenvio (fallo transitorio de envio a SET). El worker
+  -- de Go lo reintenta. Solo aplica a estado FIRMADO; otros estados devuelven error.
+  PROCEDURE pr_request_retry(p_client_id IN NUMBER, p_cdc IN VARCHAR2, p_out OUT CLOB);
+
 END pkg_esign_document_api;
 /
 
@@ -160,6 +164,31 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
       WHEN NO_DATA_FOUND THEN raise_application_error(pkg_esign_http.c_ora_not_found, 'XML inexistente');
     END;
   END pr_get_xml;
+
+  PROCEDURE pr_request_retry(p_client_id IN NUMBER, p_cdc IN VARCHAR2, p_out OUT CLOB) IS
+    l_estado document.estado%TYPE;
+    l_data   CLOB;
+  BEGIN
+    pkg_esign_session.set_client(p_client_id);
+    BEGIN
+      SELECT estado INTO l_estado FROM document WHERE client_id = p_client_id AND cdc = p_cdc;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN raise_application_error(pkg_esign_http.c_ora_not_found, 'documento inexistente');
+    END;
+
+    IF l_estado <> 'FIRMADO' THEN
+      raise_application_error(pkg_esign_http.c_ora_bad_request,
+        'solo se puede reenviar un documento en estado FIRMADO (actual: ' || l_estado || ')');
+    END IF;
+
+    UPDATE /*+ no_parallel */ document
+       SET retry_requested = 1
+     WHERE client_id = p_client_id AND cdc = p_cdc;
+
+    SELECT JSON_OBJECT('cdc' VALUE p_cdc, 'retry_requested' VALUE 'true' FORMAT JSON RETURNING CLOB)
+      INTO l_data FROM dual;
+    p_out := pkg_esign_util.fn_ok(l_data);
+  END pr_request_retry;
 
 END pkg_esign_document_api;
 /
