@@ -173,6 +173,43 @@ BEGIN
 END;]');
 
   ---------------------------------------------------------------------------
+  -- INVITACIONES (base). POST crea una invitacion PENDING con token + expiracion.
+  -- FUTURO: el envio del correo y la aceptacion por token quedan pendientes.
+  ---------------------------------------------------------------------------
+  ords.define_template(p_module_name => 'esign', p_pattern => 'invitations');
+  ords.define_handler(
+    p_module_name => 'esign', p_pattern => 'invitations', p_method => 'POST',
+    p_source_type => ords.source_type_plsql,
+    p_source => q'[
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+BEGIN
+    pkg_esign_auth_api.pr_invite_user(
+        p_authorization => owa_util.get_cgi_env('AUTHORIZATION'),
+        p_body          => l_body,
+        p_out           => l_out
+    );
+    htp.p(l_out);
+END;]');
+
+  ords.define_template(p_module_name => 'esign', p_pattern => 'invitations/accept');
+  ords.define_handler(
+    p_module_name => 'esign', p_pattern => 'invitations/accept', p_method => 'POST',
+    p_source_type => ords.source_type_plsql,
+    p_source => q'[
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+BEGIN
+    pkg_esign_auth_api.pr_accept_invitation(
+        p_body => l_body,
+        p_out  => l_out
+    );
+    htp.p(l_out);
+END;]');
+
+  ---------------------------------------------------------------------------
   -- ESTABLECIMIENTOS / PUNTOS
   ---------------------------------------------------------------------------
   ords.define_template(p_module_name => 'esign', p_pattern => 'establecimientos');

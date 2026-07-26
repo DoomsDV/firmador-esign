@@ -25,10 +25,10 @@ func New(resolver *tenant.Resolver) *Server {
 // Handler arma el router. /v1/health es público; el resto exige API key.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/health", s.handleHealth)
-	mux.HandleFunc("POST /v1/documents", s.authMiddleware(s.handleCreateDocument))
-	mux.HandleFunc("POST /v1/documents/{cdc}/cancel", s.authMiddleware(s.handleCancelDocument))
-	mux.HandleFunc("POST /v1/events/inutilizacion", s.authMiddleware(s.handleInutilizacion))
+	mux.HandleFunc("GET /v1/health", s.withLogging(s.handleHealth))
+	mux.HandleFunc("POST /v1/documents", s.withLogging(s.authMiddleware(s.handleCreateDocument)))
+	mux.HandleFunc("POST /v1/documents/{cdc}/cancel", s.withLogging(s.authMiddleware(s.handleCancelDocument)))
+	mux.HandleFunc("POST /v1/events/inutilizacion", s.withLogging(s.authMiddleware(s.handleInutilizacion)))
 	return mux
 }
 

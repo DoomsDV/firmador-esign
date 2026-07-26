@@ -15,6 +15,7 @@ type ctxKey int
 const (
 	ctxKeyTenant ctxKey = iota
 	ctxKeyAPIKey
+	ctxKeyLog
 )
 
 // prefixEnv deriva el ambiente del prefijo de la API key. Es la única fuente de
@@ -53,6 +54,11 @@ func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		if !strings.EqualFold(cfg.Status, "ACTIVE") {
 			writeErr(w, http.StatusForbidden, "CLIENT_INACTIVE", "el cliente no está activo (status="+cfg.Status+")")
 			return
+		}
+		// Enriquecer el log del request (si withLogging esta activo) con el tenant.
+		if info := logInfoFromContext(r.Context()); info != nil {
+			info.clientID = cfg.ClientID
+			info.environment = cfg.EnvUpper()
 		}
 		ctx := context.WithValue(r.Context(), ctxKeyTenant, cfg)
 		ctx = context.WithValue(ctx, ctxKeyAPIKey, apiKey)

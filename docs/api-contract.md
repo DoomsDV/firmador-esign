@@ -2,6 +2,8 @@
 
 Versión: `v1` · Estado: diseño para el frontend futuro + referencia del backend ya implementado.
 
+> También disponible como especificación **OpenAPI 3.0** en [`docs/openapi.yaml`](./openapi.yaml), abrible en Swagger UI / Redoc para documentación interactiva y generación de clientes.
+
 Este documento describe los **tres planos** de la plataforma:
 
 | Plano | Base URL | Autenticación | Consumidor | Estado |
@@ -111,6 +113,16 @@ Handlers delgados en `db/ords/01_esign_module.sql` que delegan en los paquetes `
 | `POST` | `/api/v1/auth/refresh` | — | — | Renueva el access token con el refresh token |
 | `POST` | `/api/v1/auth/logout` | JWT | cualquiera | Revoca la sesión |
 | `GET` | `/api/v1/auth/me` | JWT | cualquiera | Datos del usuario + membresía actual |
+| `POST` | `/api/v1/invitations` | JWT | owner | Crea una invitación PENDING (email + role) con token/expiración |
+| `POST` | `/api/v1/invitations/accept` | — | — | Acepta una invitación por token (pendiente: flujo por correo) |
+
+**`POST /invitations`** — request `{ "email": "contador@empresa.com", "role": "analyst" }`; response:
+
+```json
+{ "success": true, "data": { "status": "INVITE_PENDING", "email": "contador@empresa.com", "role": "analyst", "token": "…", "expires_in_days": 7 } }
+```
+
+> Base para el futuro envío por correo: hoy solo persiste la invitación (tabla `client_invitation`) y devuelve el `token`. El envío del email y la aceptación (`/invitations/accept`, que creará el usuario + membresía) quedan pendientes.
 
 **`POST /auth/register`** — request:
 
@@ -213,8 +225,16 @@ Cada establecimiento (sucursal) tiene su propia dirección/geo (va en `gEmis` de
 
 | Método | Ruta | Rol | Descripción |
 |---|---|---|---|
-| `GET` | `/api/v1/api-keys` | owner/developer | Prefijo + estado de cada key (nunca la key completa) |
+| `GET` | `/api/v1/api-keys` | owner/developer | Lista de keys (prefijo, ambiente, estado, label; nunca la key completa) |
 | `POST` | `/api/v1/api-keys/{test\|prod}/rotate` | owner/developer | Genera una key nueva y la muestra **una sola vez** |
+
+Las keys se guardan en la tabla hija `client_api_key` (rotables, con historial). Al rotar, las keys `ACTIVE` previas del mismo ambiente pasan a `REVOKED` y entra la nueva como `ACTIVE`.
+
+**`GET /api-keys`** — response:
+
+```json
+{ "success": true, "data": { "keys": [ { "environment": "TEST", "prefix": "sk_test_ac41", "status": "ACTIVE", "label": "seed", "created_at": "2026-07-25T21:53:27-03:00" } ] } }
+```
 
 **`POST /api-keys/test/rotate`** — response (única vez que se ve la key completa):
 
@@ -224,12 +244,12 @@ Cada establecimiento (sucursal) tiene su propia dirección/geo (va en `gEmis` de
 
 ### 3.6 Certificado
 
-El BLOB del `.p12` **nunca** se expone al panel; solo metadata. El upload llega ya cifrado (AES-256-GCM) por el cliente.
+El BLOB del `.p12` **nunca** se expone al panel; solo metadata. El upload llega ya cifrado (AES-256-GCM) por el cliente. Los certificados se guardan en la tabla hija `client_certificate` (historial); a lo sumo uno queda `ACTIVE` (el previo pasa a `INACTIVE` al subir uno nuevo).
 
 | Método | Ruta | Rol | Descripción |
 |---|---|---|---|
-| `GET` | `/api/v1/certificate` | owner | Metadata: subject DN, vigencia, estado |
-| `POST` | `/api/v1/certificate` | owner | Sube P12 cifrado + password cifrado + metadata |
+| `GET` | `/api/v1/certificate` | owner | Metadata del certificado `ACTIVE`: subject DN, vigencia, estado |
+| `POST` | `/api/v1/certificate` | owner | Sube P12 cifrado + password cifrado + metadata (nuevo `ACTIVE`) |
 
 `analyst` recibe `403 FORBIDDEN` en ambos.
 
@@ -415,6 +435,8 @@ Consumido **solo** por el servicio Go. Cada handler valida `X-Service-Token` con
 | `POST` | `/internal/v1/documents` | `DocumentRecord` (client_id, cdc, estado, cod_res, prot_aut, xml_firmado, qr_url, …) | `{ success }` |
 | `POST` | `/internal/v1/events` | `EventRecord` (client_id, cdc, tipo_evento, estado, cod_res, prot_aut, motivo) | `{ success }` |
 | `POST` | `/internal/v1/logs` | `{ client_id, environment, endpoint, http_status, latency_ms }` | `{ success }` |
+
+> El servidor Go registra automáticamente cada request de `/v1/*` en `api_log` vía este endpoint (middleware `withLogging`, asíncrono y best-effort: nunca bloquea ni falla el request). El `client_id`/`environment` se incluyen cuando el request está autenticado.
 
 **`POST /internal/v1/context`** — response `data`:
 

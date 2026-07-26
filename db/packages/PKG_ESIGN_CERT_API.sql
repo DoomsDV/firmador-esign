@@ -1,13 +1,14 @@
--- PKG_ESIGN_CERT_API: gestion del certificado .p12 (siempre cifrado por Go, AES-256-GCM).
--- pr_put_certificate recibe ciphertext+nonce+metadata y los persiste opacos en client.
--- pr_get_certificate es SOLO interno (Go): devuelve los blobs cifrados. El BLOB nunca se
--- expone al panel; el panel solo ve metadata (subject/vigencia/estado) via pr_get_meta.
+-- PKG_ESIGN_CERT_API: gestion del certificado .p12 (siempre cifrado por Go, AES-256-GCM),
+-- respaldada por la tabla hija client_certificate (historial; a lo sumo uno ACTIVE).
+-- pr_put_certificate recibe ciphertext+nonce+metadata, desactiva el ACTIVE previo e inserta
+-- el nuevo. pr_get_certificate es SOLO interno (Go): devuelve los blobs cifrados del ACTIVE.
+-- El BLOB nunca se expone al panel; el panel solo ve metadata (subject/vigencia/estado).
 CREATE OR REPLACE PACKAGE pkg_esign_cert_api AS
 
   PROCEDURE pr_put_certificate(p_client_id IN NUMBER, p_role IN VARCHAR2, p_body IN CLOB, p_out OUT CLOB);
   PROCEDURE pr_get_meta(p_client_id IN NUMBER, p_out OUT CLOB);
 
-  -- Interno (Go): blobs cifrados + password cifrado + key_version.
+  -- Interno (Go): blobs cifrados + password cifrado + key_version del certificado ACTIVE.
   PROCEDURE pr_get_certificate(
     p_client_id      IN  NUMBER,
     p_p12_ciphertext OUT BLOB,
@@ -28,7 +29,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_cert_api AS
   PROCEDURE pr_put_certificate(p_client_id IN NUMBER, p_role IN VARCHAR2, p_body IN CLOB, p_out OUT CLOB) IS
     -- El hex del .p12 supera VARCHAR2(4000): se extrae con RETURNING CLOB y se
     -- convierte a BLOB por chunks en variables (fn_hex_to_blob tiene efectos y no
-    -- puede usarse dentro del SQL del UPDATE).
+    -- puede usarse dentro del SQL del INSERT).
     l_p12 BLOB;
     l_pwd BLOB;
   BEGIN
@@ -40,16 +41,21 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_cert_api AS
     l_p12 := pkg_esign_util.fn_hex_to_blob(json_value(p_body, '$.p12_ciphertext' RETURNING CLOB));
     l_pwd := pkg_esign_util.fn_hex_to_blob(json_value(p_body, '$.pwd_ciphertext' RETURNING CLOB));
 
-    UPDATE client SET
-      cert_subject_dn     = json_value(p_body, '$.subject_dn' RETURNING VARCHAR2(400)),
-      cert_not_after      = TO_TIMESTAMP_TZ(json_value(p_body, '$.not_after'), 'YYYY-MM-DD"T"HH24:MI:SSTZH:TZM'),
-      cert_p12_ciphertext = l_p12,
-      cert_p12_nonce      = HEXTORAW(json_value(p_body, '$.p12_nonce')),
-      cert_pwd_ciphertext = l_pwd,
-      cert_pwd_nonce      = HEXTORAW(json_value(p_body, '$.pwd_nonce')),
-      cert_key_version    = NVL(json_value(p_body, '$.key_version'), 1),
-      cert_status         = 'ACTIVE'
-    WHERE id_client = p_client_id;
+    -- El certificado ACTIVE previo pasa a INACTIVE (historial); entra el nuevo como ACTIVE.
+    UPDATE /*+ no_parallel */ client_certificate
+       SET status = 'INACTIVE'
+     WHERE client_id = p_client_id AND status = 'ACTIVE';
+
+    INSERT /*+ no_parallel */ INTO client_certificate (
+      client_id, subject_dn, not_after,
+      p12_ciphertext, p12_nonce, pwd_ciphertext, pwd_nonce, key_version, status)
+    VALUES (
+      p_client_id,
+      json_value(p_body, '$.subject_dn' RETURNING VARCHAR2(400)),
+      TO_TIMESTAMP_TZ(json_value(p_body, '$.not_after'), 'YYYY-MM-DD"T"HH24:MI:SSTZH:TZM'),
+      l_p12, HEXTORAW(json_value(p_body, '$.p12_nonce')),
+      l_pwd, HEXTORAW(json_value(p_body, '$.pwd_nonce')),
+      NVL(json_value(p_body, '$.key_version'), 1), 'ACTIVE');
 
     p_out := pkg_esign_util.fn_ok;
   END pr_put_certificate;
@@ -58,13 +64,22 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_cert_api AS
     l_data CLOB;
   BEGIN
     pkg_esign_session.set_client(p_client_id);
-    SELECT JSON_OBJECT(
-             'subject_dn' VALUE cert_subject_dn,
-             'not_after'  VALUE TO_CHAR(cert_not_after, 'YYYY-MM-DD"T"HH24:MI:SSTZH:TZM'),
-             'status'     VALUE NVL(cert_status, 'NONE'),
-             'key_version' VALUE cert_key_version
-             RETURNING CLOB)
-      INTO l_data FROM client WHERE id_client = p_client_id;
+    BEGIN
+      SELECT JSON_OBJECT(
+               'subject_dn'  VALUE subject_dn,
+               'not_after'   VALUE TO_CHAR(not_after, 'YYYY-MM-DD"T"HH24:MI:SSTZH:TZM'),
+               'status'      VALUE status,
+               'key_version' VALUE key_version
+               RETURNING CLOB)
+        INTO l_data
+        FROM client_certificate
+       WHERE client_id = p_client_id AND status = 'ACTIVE'
+       ORDER BY created_at DESC
+       FETCH FIRST 1 ROWS ONLY;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        SELECT JSON_OBJECT('status' VALUE 'NONE' RETURNING CLOB) INTO l_data FROM dual;
+    END;
     p_out := pkg_esign_util.fn_ok(l_data);
   END pr_get_meta;
 
@@ -78,12 +93,17 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_cert_api AS
   ) IS
   BEGIN
     pkg_esign_session.set_client(p_client_id);
-    SELECT cert_p12_ciphertext, cert_p12_nonce, cert_pwd_ciphertext, cert_pwd_nonce, cert_key_version
-      INTO p_p12_ciphertext, p_p12_nonce, p_pwd_ciphertext, p_pwd_nonce, p_key_version
-      FROM client WHERE id_client = p_client_id;
-    IF p_p12_ciphertext IS NULL THEN
-      raise_application_error(pkg_esign_http.c_ora_not_found, 'el cliente no tiene certificado cargado');
-    END IF;
+    BEGIN
+      SELECT p12_ciphertext, p12_nonce, pwd_ciphertext, pwd_nonce, key_version
+        INTO p_p12_ciphertext, p_p12_nonce, p_pwd_ciphertext, p_pwd_nonce, p_key_version
+        FROM client_certificate
+       WHERE client_id = p_client_id AND status = 'ACTIVE'
+       ORDER BY created_at DESC
+       FETCH FIRST 1 ROWS ONLY;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        raise_application_error(pkg_esign_http.c_ora_not_found, 'el cliente no tiene certificado cargado');
+    END;
   END pr_get_certificate;
 
   PROCEDURE pr_get_certificate_json(p_client_id IN NUMBER, p_out OUT CLOB) IS

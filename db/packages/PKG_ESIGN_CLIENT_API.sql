@@ -268,7 +268,10 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_client_api AS
              'business_name' VALUE c.business_name, 'ruc' VALUE c.ruc, 'dv' VALUE c.dv,
              'status' VALUE c.status,
              'environment' VALUE p_environment,
-             'cert_available' VALUE CASE WHEN c.cert_p12_ciphertext IS NOT NULL THEN 'true' ELSE 'false' END FORMAT JSON,
+             'cert_available' VALUE CASE WHEN EXISTS (
+                 SELECT 1 FROM client_certificate cc
+                  WHERE cc.client_id = c.id_client AND cc.status = 'ACTIVE'
+               ) THEN 'true' ELSE 'false' END FORMAT JSON,
              'emisor' VALUE (
                SELECT JSON_OBJECT('tipo_contribuyente' VALUE e.tipo_contribuyente,
                                   'tipo_regimen' VALUE e.tipo_regimen,

@@ -221,9 +221,8 @@ BEGIN
   pkg_esign_client_api.pr_upsert_env(l_cid, 'owner', :env_body, l_out);
   pkg_esign_cert_api.pr_put_certificate(l_cid, 'owner', :cert_body, l_out);
 
-  pkg_esign_session.set_client(l_cid);
-  UPDATE client SET sk_test_prefix = :pfx, sk_test_hash = :hash, sk_test_status = 'ACTIVE'
-   WHERE id_client = l_cid;
+  -- La API key se registra en la tabla hija client_api_key (rotable) con hash precomputado en Go.
+  pkg_esign_apikey_api.pr_register_key(l_cid, 'TEST', :pfx, :hash, 'seed');
 
   COMMIT;
 END;`

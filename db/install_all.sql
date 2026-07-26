@@ -22,6 +22,9 @@ PROMPT === Tablas ===
 @@tables/13_document_xml.sql
 @@tables/14_document_event.sql
 @@tables/15_api_log.sql
+@@tables/16_client_api_key.sql
+@@tables/17_client_certificate.sql
+@@tables/18_client_invitation.sql
 
 PROMPT === Paquete de sesion (requerido por el contexto) ===
 @@packages/PKG_ESIGN_SESSION.sql
