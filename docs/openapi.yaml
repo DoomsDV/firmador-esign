@@ -335,10 +335,42 @@ paths:
         "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /api/v1/documents/search:
+    post:
+      tags: [Panel - Documentos]
+      summary: Listado paginado de documentos (filtros en el body)
+      description: |
+        Endpoint de listado recomendado. Los filtros van en el body porque esta instancia
+        ORDS no liga query-params de forma fiable (ORDS-25001). `estado`/`tipo` en null no filtran.
+      security: [{ bearerJWT: [] }]
+      servers: [{ url: "https://g9549f707e8ebfa-aoxdev.adb.sa-saopaulo-1.oraclecloudapps.com/ords/esign" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [environment]
+              properties:
+                environment: { type: string, enum: [TEST, PROD] }
+                estado: { type: string, nullable: true, enum: [BORRADOR, FIRMADO, ENVIADO, APROBADO, RECHAZADO, CANCELADO] }
+                tipo: { type: integer, nullable: true }
+                page: { type: integer, default: 1 }
+                pageSize: { type: integer, default: 20 }
+      responses:
+        "200":
+          description: Listado con meta de paginacion (page/pageSize/total)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /api/v1/documents:
     get:
       tags: [Panel - Documentos]
-      summary: Listado paginado de documentos
+      summary: "[DEPRECADO] Listado por query-params"
+      deprecated: true
+      description: |
+        No usar: los query-params no ligan de forma fiable en esta instancia ORDS (ORDS-25001).
+        Usar POST /api/v1/documents/search con los filtros en el body.
       security: [{ bearerJWT: [] }]
       servers: [{ url: "https://g9549f707e8ebfa-aoxdev.adb.sa-saopaulo-1.oraclecloudapps.com/ords/esign" }]
       parameters:
@@ -360,6 +392,40 @@ paths:
         - { name: cdc, in: path, required: true, schema: { type: string } }
       responses:
         "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/documents/{cdc}/xml:
+    get:
+      tags: [Panel - Documentos]
+      summary: Descargar el XML firmado (application/xml)
+      security: [{ bearerJWT: [] }]
+      servers: [{ url: "https://g9549f707e8ebfa-aoxdev.adb.sa-saopaulo-1.oraclecloudapps.com/ords/esign" }]
+      parameters:
+        - { name: cdc, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: XML firmado tal cual se envio a SIFEN (regla 0141)
+          content:
+            application/xml:
+              schema: { type: string }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/documents/{cdc}/retry:
+    post:
+      tags: [Panel - Documentos]
+      summary: Marcar un documento FIRMADO para reenvio a SIFEN
+      description: |
+        Marca `retry_requested=1` en un documento en estado FIRMADO (fallo transitorio de envio).
+        El worker de Go lo reintenta. Solo aplica a FIRMADO; otros estados devuelven 400.
+      security: [{ bearerJWT: [] }]
+      servers: [{ url: "https://g9549f707e8ebfa-aoxdev.adb.sa-saopaulo-1.oraclecloudapps.com/ords/esign" }]
+      parameters:
+        - { name: cdc, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Documento marcado para reenvio
+          content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } }
+        "400": { $ref: "#/components/responses/Unprocessable" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   # --------------------------------------------------------------------------
