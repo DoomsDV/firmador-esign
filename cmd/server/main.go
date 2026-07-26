@@ -5,15 +5,20 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/joho/godotenv"
 
 	"github.com/DoomsDV/firmador-e/internal/httpapi"
+	"github.com/DoomsDV/firmador-e/internal/retry"
 	"github.com/DoomsDV/firmador-e/internal/tenant"
 )
 
@@ -32,7 +37,29 @@ func main() {
 
 	ords := tenant.NewORDSClient(ordsBase, serviceToken)
 	resolver := tenant.NewResolver(ords, masterKey, ttl)
-	srv := httpapi.New(resolver)
+
+	// ESIGN_JWT_SECRET = valor exacto de app_parameter.JWT_TOKEN (bytes ASCII del string).
+	jwtSecret := []byte(strings.TrimSpace(os.Getenv("ESIGN_JWT_SECRET")))
+	if len(jwtSecret) == 0 {
+		log.Printf("⚠️  ESIGN_JWT_SECRET vacio: /v1/panel/* devolvera 503")
+	}
+
+	srv := httpapi.New(resolver, httpapi.ServerOptions{
+		JWTSecret:   jwtSecret,
+		JWTIssuer:   envOr("ESIGN_JWT_ISSUER", "esign-api"),
+		JWTAudience: envOr("ESIGN_JWT_AUDIENCE", "esign-app"),
+	})
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	worker := retry.New(resolver, retry.Config{
+		Interval: parseTTL(os.Getenv("ESIGN_RETRY_INTERVAL"), 60*time.Second),
+		MaxRetry: envInt("ESIGN_RETRY_MAX", 10),
+		Batch:    envInt("ESIGN_RETRY_BATCH", 25),
+		Enabled:  envBool("ESIGN_RETRY_ENABLED", true),
+	})
+	go worker.Start(ctx)
 
 	addr := envOr("SERVER_ADDR", ":8080")
 	httpServer := &http.Server{
@@ -42,6 +69,13 @@ func main() {
 		ReadTimeout:       60 * time.Second,
 		WriteTimeout:      90 * time.Second,
 	}
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = httpServer.Shutdown(shutdownCtx)
+	}()
 
 	log.Printf("🚀 esign API escuchando en %s (ORDS=%s, cache TTL=%s)", addr, ordsBase, ttl)
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -64,6 +98,35 @@ func envOr(key, def string) string {
 	return def
 }
 
+func envInt(key string, def int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		log.Printf("⚠️  %s invalido (%q): usando %d", key, raw, def)
+		return def
+	}
+	return n
+}
+
+func envBool(key string, def bool) bool {
+	raw := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	if raw == "" {
+		return def
+	}
+	switch raw {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		log.Printf("⚠️  %s invalido (%q): usando %v", key, raw, def)
+		return def
+	}
+}
+
 func parseTTL(raw string, def time.Duration) time.Duration {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -71,7 +134,7 @@ func parseTTL(raw string, def time.Duration) time.Duration {
 	}
 	d, err := time.ParseDuration(raw)
 	if err != nil {
-		log.Printf("⚠️  ESIGN_TENANT_CACHE_TTL inválido (%q): usando %s", raw, def)
+		log.Printf("⚠️  duration invalida (%q): usando %s", raw, def)
 		return def
 	}
 	return d

@@ -208,7 +208,13 @@ func (r *Resolver) Resolve(ctx context.Context, apiKey string, expectedEnv sifen
 
 // GetCertificate obtiene y descifra el certificado .p12 del tenant.
 func (r *Resolver) GetCertificate(ctx context.Context, cfg *Config) (*Certificate, error) {
-	resp, err := r.ords.getCertificate(ctx, cfg.ClientID)
+	return r.GetCertificateByClientID(ctx, cfg.ClientID)
+}
+
+// GetCertificateByClientID obtiene y descifra el certificado por client_id
+// (worker de reenvio: no tiene Config completo vía API key).
+func (r *Resolver) GetCertificateByClientID(ctx context.Context, clientID int) (*Certificate, error) {
+	resp, err := r.ords.getCertificate(ctx, clientID)
 	if err != nil {
 		return nil, err
 	}
@@ -221,6 +227,11 @@ func (r *Resolver) GetCertificate(ctx context.Context, cfg *Config) (*Certificat
 		return nil, fmt.Errorf("descifrar contraseña del certificado: %w", err)
 	}
 	return &Certificate{P12: p12, Password: string(pwd), KeyVersion: resp.KeyVersion}, nil
+}
+
+// MasterKey expone la clave AES-256 para cifrar secretos del panel (mediación).
+func (r *Resolver) MasterKey() []byte {
+	return r.masterKey
 }
 
 // GetCSC obtiene y descifra el CSC del ambiente del tenant (necesario para el QR).

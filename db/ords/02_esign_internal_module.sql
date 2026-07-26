@@ -198,6 +198,100 @@ BEGIN
 END;]');
 
   ---------------------------------------------------------------------------
+  -- DOCUMENTS/PENDING-RETRY: lista FIRMADO con xml (worker Go).
+  ---------------------------------------------------------------------------
+  ords.define_template(p_module_name => 'esign_internal', p_pattern => 'documents/pending-retry');
+  ords.define_handler(
+    p_module_name => 'esign_internal', p_pattern => 'documents/pending-retry', p_method => 'POST',
+    p_source_type => ords.source_type_plsql,
+    p_source => q'[
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+BEGIN
+    IF NOT pkg_esign_util.fn_service_token_ok(owa_util.get_cgi_env('X-Service-Token')) THEN
+        pkg_esign_http.pr_error(
+            p_status  => pkg_esign_http.c_unauthorized,
+            p_reason  => pkg_esign_http.m_unauthorized,
+            p_code    => pkg_esign_http.e_unauthorized,
+            p_message => pkg_esign_http.msg_service_token
+        );
+        RETURN;
+    END IF;
+
+    pkg_esign_document_api.pr_list_pending_retry(
+        p_mode  => NVL(json_value(l_body, '$.mode'), 'flagged'),
+        p_limit => NVL(TO_NUMBER(json_value(l_body, '$.limit')), 50),
+        p_out   => l_out
+    );
+    htp.p(l_out);
+END;]');
+
+  ---------------------------------------------------------------------------
+  -- CERTIFICATE/STORE: persistir P12 cifrado (mediacion Go del panel).
+  ---------------------------------------------------------------------------
+  ords.define_template(p_module_name => 'esign_internal', p_pattern => 'certificate/store');
+  ords.define_handler(
+    p_module_name => 'esign_internal', p_pattern => 'certificate/store', p_method => 'POST',
+    p_source_type => ords.source_type_plsql,
+    p_source => q'[
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+BEGIN
+    IF NOT pkg_esign_util.fn_service_token_ok(owa_util.get_cgi_env('X-Service-Token')) THEN
+        pkg_esign_http.pr_error(
+            p_status  => pkg_esign_http.c_unauthorized,
+            p_reason  => pkg_esign_http.m_unauthorized,
+            p_code    => pkg_esign_http.e_unauthorized,
+            p_message => pkg_esign_http.msg_service_token
+        );
+        RETURN;
+    END IF;
+
+    pkg_esign_cert_api.pr_put_certificate(
+        p_client_id => TO_NUMBER(json_value(l_body, '$.client_id')),
+        p_role      => NVL(json_value(l_body, '$.role'), 'owner'),
+        p_body      => l_body,
+        p_out       => l_out
+    );
+    COMMIT;
+    htp.p(l_out);
+END;]');
+
+  ---------------------------------------------------------------------------
+  -- ENVIRONMENTS/STORE: persistir timbrado + CSC cifrado (mediacion Go).
+  ---------------------------------------------------------------------------
+  ords.define_template(p_module_name => 'esign_internal', p_pattern => 'environments/store');
+  ords.define_handler(
+    p_module_name => 'esign_internal', p_pattern => 'environments/store', p_method => 'POST',
+    p_source_type => ords.source_type_plsql,
+    p_source => q'[
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+BEGIN
+    IF NOT pkg_esign_util.fn_service_token_ok(owa_util.get_cgi_env('X-Service-Token')) THEN
+        pkg_esign_http.pr_error(
+            p_status  => pkg_esign_http.c_unauthorized,
+            p_reason  => pkg_esign_http.m_unauthorized,
+            p_code    => pkg_esign_http.e_unauthorized,
+            p_message => pkg_esign_http.msg_service_token
+        );
+        RETURN;
+    END IF;
+
+    pkg_esign_client_api.pr_upsert_env(
+        p_client_id => TO_NUMBER(json_value(l_body, '$.client_id')),
+        p_role      => NVL(json_value(l_body, '$.role'), 'owner'),
+        p_body      => l_body,
+        p_out       => l_out
+    );
+    COMMIT;
+    htp.p(l_out);
+END;]');
+
+  ---------------------------------------------------------------------------
   -- EVENTS: registrar evento (cancelacion/inutilizacion).
   ---------------------------------------------------------------------------
   ords.define_template(p_module_name => 'esign_internal', p_pattern => 'events');

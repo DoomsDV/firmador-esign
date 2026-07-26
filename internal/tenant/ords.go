@@ -239,10 +239,56 @@ type DocumentRecord struct {
 	MensajeRes      string `json:"mensaje_res"`
 	XMLFirmado      string `json:"xml_firmado"`
 	QRURL           string `json:"qr_url"`
+	FromRetry       bool   `json:"from_retry,omitempty"`
 }
 
 func (c *ORDSClient) RegisterDocument(ctx context.Context, rec DocumentRecord) error {
 	return c.post(ctx, "documents", rec, nil)
+}
+
+// PendingRetryDoc es un DE FIRMADO listo para reenvio (XML ya firmado).
+type PendingRetryDoc struct {
+	CDC             string  `json:"cdc"`
+	ClientID        int     `json:"client_id"`
+	Environment     string  `json:"environment"`
+	Establecimiento string  `json:"establecimiento"`
+	PuntoExpedicion string  `json:"punto_expedicion"`
+	NumDocumento    string  `json:"num_documento"`
+	TipoDE          int     `json:"tipo_de"`
+	RetryRequested  int     `json:"retry_requested"`
+	RetryCount      int     `json:"retry_count"`
+	ReceptorNombre  string  `json:"receptor_nombre"`
+	ReceptorDoc     string  `json:"receptor_doc"`
+	Moneda          string  `json:"moneda"`
+	TotalOperacion  *float64 `json:"total_operacion"`
+	QRURL           string  `json:"qr_url"`
+	XMLFirmado      string  `json:"xml_firmado"`
+}
+
+// ListPendingRetry pide documentos FIRMADO pendientes. mode: "flagged" | "all".
+func (c *ORDSClient) ListPendingRetry(ctx context.Context, mode string, limit int) ([]PendingRetryDoc, error) {
+	var out []PendingRetryDoc
+	err := c.post(ctx, "documents/pending-retry", map[string]any{
+		"mode":  mode,
+		"limit": limit,
+	}, &out)
+	if err != nil {
+		return nil, err
+	}
+	if out == nil {
+		return []PendingRetryDoc{}, nil
+	}
+	return out, nil
+}
+
+// StoreCertificate persiste un certificado YA cifrado (hex) vía ORDS interno.
+func (c *ORDSClient) StoreCertificate(ctx context.Context, body map[string]any) error {
+	return c.post(ctx, "certificate/store", body, nil)
+}
+
+// StoreEnvironment persiste timbrado + CSC YA cifrado (hex) vía ORDS interno.
+func (c *ORDSClient) StoreEnvironment(ctx context.Context, body map[string]any) error {
+	return c.post(ctx, "environments/store", body, nil)
 }
 
 // EventRecord es lo que se persiste tras un evento (cancelación/inutilización).

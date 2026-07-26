@@ -7,28 +7,55 @@ import (
 	"github.com/DoomsDV/firmador-e/internal/tenant"
 )
 
+// ServerOptions configura JWT del panel y otros extras del HTTP API.
+type ServerOptions struct {
+	JWTSecret   []byte // bytes ASCII de app_parameter.JWT_TOKEN
+	JWTIssuer   string // default esign-api
+	JWTAudience string // default esign-app
+}
+
 // Server expone el motor de emisión SIFEN como API HTTP multi-tenant.
 type Server struct {
-	resolver *tenant.Resolver
-	tz       *time.Location
+	resolver    *tenant.Resolver
+	tz          *time.Location
+	jwtSecret   []byte
+	jwtIssuer   string
+	jwtAudience string
 }
 
 // New crea el servidor con el resolver de tenants ya configurado.
-func New(resolver *tenant.Resolver) *Server {
+func New(resolver *tenant.Resolver, opts ServerOptions) *Server {
 	tz, err := time.LoadLocation("America/Asuncion")
 	if err != nil {
 		tz = time.FixedZone("PYT", -3*60*60)
 	}
-	return &Server{resolver: resolver, tz: tz}
+	issuer := opts.JWTIssuer
+	if issuer == "" {
+		issuer = "esign-api"
+	}
+	aud := opts.JWTAudience
+	if aud == "" {
+		aud = "esign-app"
+	}
+	return &Server{
+		resolver:    resolver,
+		tz:          tz,
+		jwtSecret:   opts.JWTSecret,
+		jwtIssuer:   issuer,
+		jwtAudience: aud,
+	}
 }
 
-// Handler arma el router. /v1/health es público; el resto exige API key.
+// Handler arma el router. /v1/health es público; emisión exige API key;
+// /v1/panel/* exige JWT del panel (owner para secretos).
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", s.withLogging(s.handleHealth))
 	mux.HandleFunc("POST /v1/documents", s.withLogging(s.authMiddleware(s.handleCreateDocument)))
 	mux.HandleFunc("POST /v1/documents/{cdc}/cancel", s.withLogging(s.authMiddleware(s.handleCancelDocument)))
 	mux.HandleFunc("POST /v1/events/inutilizacion", s.withLogging(s.authMiddleware(s.handleInutilizacion)))
+	mux.HandleFunc("POST /v1/panel/certificate", s.withLogging(s.panelJWTMiddleware(true, s.handlePanelCertificate)))
+	mux.HandleFunc("PUT /v1/panel/environments", s.withLogging(s.panelJWTMiddleware(true, s.handlePanelEnvironments)))
 	return mux
 }
 
