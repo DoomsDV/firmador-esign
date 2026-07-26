@@ -149,6 +149,53 @@ paths:
         "422": { $ref: "#/components/responses/Unprocessable" }
 
   # --------------------------------------------------------------------------
+  # PANEL → GO (mediación de secretos). Bearer JWT del panel. Solo owner.
+  # Go cifra con ESIGN_MASTER_KEY y persiste vía ORDS interno.
+  # --------------------------------------------------------------------------
+  /v1/panel/certificate:
+    post:
+      tags: [Panel - Certificado]
+      summary: Subir .p12 + password en claro (Go cifra y guarda)
+      description: |
+        El navegador envía el P12 (base64) y la password en claro. Go cifra con AES-256-GCM
+        (`ESIGN_MASTER_KEY`) y guarda vía `POST /internal/v1/certificate/store`.
+        El panel NUNCA cifra ni ve la master key.
+      security: [{ bearerJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PanelCertificateUploadRequest" }
+      responses:
+        "200":
+          description: Certificado almacenado (cifrado)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /v1/panel/environments:
+    put:
+      tags: [Panel - Cliente]
+      summary: Upsert timbrado + CSC en claro (Go cifra el CSC y guarda)
+      description: |
+        El navegador envía timbrado/CSC en claro. Go cifra el CSC y persiste vía
+        `POST /internal/v1/environments/store`. Scopeado por ambiente TEST/PROD.
+      security: [{ bearerJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PanelEnvironmentUpsertRequest" }
+      responses:
+        "200":
+          description: Ambiente actualizado
+          content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  # --------------------------------------------------------------------------
   # PANEL (ORDS /api/v1) — usar el server ORDS
   # --------------------------------------------------------------------------
   /api/v1/auth/register:
@@ -277,10 +324,34 @@ paths:
       responses:
         "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
 
+  /api/v1/establecimientos/{codigo}/puntos:
+    post:
+      tags: [Panel - Cliente]
+      summary: Alta/actualización de punto de expedición (solo owner)
+      security: [{ bearerJWT: [] }]
+      servers: [{ url: "https://g9549f707e8ebfa-aoxdev.adb.sa-saopaulo-1.oraclecloudapps.com/ords/esign" }]
+      parameters:
+        - name: codigo
+          in: path
+          required: true
+          description: Código del establecimiento (ej. 001)
+          schema: { type: string, example: "001" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PuntoExpedicionRequest" }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/v1/environments:
     put:
       tags: [Panel - Cliente]
       summary: Upsert timbrado + CSC cifrado por ambiente (solo owner)
+      description: |
+        Recibe el CSC YA cifrado (hex). El panel no debe llamar este endpoint con el CSC en claro:
+        usar `PUT /v1/panel/environments` en Go (mediación de cifrado).
       security: [{ bearerJWT: [] }]
       servers: [{ url: "https://g9549f707e8ebfa-aoxdev.adb.sa-saopaulo-1.oraclecloudapps.com/ords/esign" }]
       requestBody:
@@ -326,6 +397,9 @@ paths:
     post:
       tags: [Panel - Certificado]
       summary: Subir P12 cifrado + password cifrado (solo owner)
+      description: |
+        Recibe ciphertext+nonce YA cifrados. El panel no debe llamar este endpoint con el
+        P12 en claro: usar `POST /v1/panel/certificate` en Go (mediación de cifrado).
       security: [{ bearerJWT: [] }]
       servers: [{ url: "https://g9549f707e8ebfa-aoxdev.adb.sa-saopaulo-1.oraclecloudapps.com/ords/esign" }]
       requestBody:
@@ -714,6 +788,35 @@ components:
         telefono: { type: string }
         email: { type: string }
       required: [codigo, direccion, dep, ciu]
+
+    PuntoExpedicionRequest:
+      type: object
+      properties:
+        codigo: { type: string, example: "001" }
+        descripcion: { type: string, example: "Caja 1" }
+        is_active: { type: integer, enum: [0, 1], default: 1 }
+      required: [codigo]
+
+    PanelCertificateUploadRequest:
+      type: object
+      description: Payload del panel hacia Go. Go cifra antes de persistir.
+      properties:
+        p12_base64: { type: string, description: "Contenido del .p12 en base64" }
+        password: { type: string, format: password, description: "Password del P12 en claro" }
+        subject_dn: { type: string, description: "Opcional; Go puede derivarlo del P12" }
+        not_after: { type: string, format: date-time, description: "Opcional; Go puede derivarlo del P12" }
+      required: [p12_base64, password]
+
+    PanelEnvironmentUpsertRequest:
+      type: object
+      description: Payload del panel hacia Go. Go cifra el CSC antes de persistir.
+      properties:
+        environment: { type: string, enum: [TEST, PROD] }
+        num_timbrado: { type: string, example: "06038964" }
+        fecha_inicio_vigencia: { type: string, format: date, example: "2026-07-09" }
+        id_csc: { type: string, example: "0001" }
+        csc: { type: string, description: "CSC en claro (32 hex chars típicos de SET)" }
+      required: [environment, num_timbrado, fecha_inicio_vigencia, id_csc, csc]
 
     EnvironmentRequest:
       type: object
