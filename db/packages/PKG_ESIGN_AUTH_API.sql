@@ -54,7 +54,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_auth_api AS
     l_client_id client.id_client%TYPE;
   BEGIN
     IF l_email IS NULL OR l_password IS NULL OR l_bname IS NULL OR l_ruc IS NULL THEN
-      raise_application_error(-20400, 'email, password, business_name y ruc son obligatorios');
+      raise_application_error(pkg_esign_http.c_ora_bad_request, 'email, password, business_name y ruc son obligatorios');
     END IF;
 
     l_salt := pkg_esign_util.fn_new_salt;
@@ -84,7 +84,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_auth_api AS
   EXCEPTION
     WHEN DUP_VAL_ON_INDEX THEN
       pkg_esign_session.end_bootstrap;
-      raise_application_error(-20409, 'el email ya esta registrado');
+      raise_application_error(pkg_esign_http.c_ora_conflict, 'el email ya esta registrado');
   END pr_register;
 
   PROCEDURE pr_login(p_body IN CLOB, p_out OUT CLOB) IS
@@ -101,11 +101,11 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_auth_api AS
         FROM users WHERE email = l_email;
     EXCEPTION
       WHEN NO_DATA_FOUND THEN
-        raise_application_error(-20401, 'credenciales invalidas');
+        raise_application_error(pkg_esign_http.c_ora_unauthorized, 'credenciales invalidas');
     END;
 
     IF l_active = 0 OR NOT pkg_esign_util.fn_verify_password(l_password, l_salt, l_hash) THEN
-      raise_application_error(-20401, 'credenciales invalidas');
+      raise_application_error(pkg_esign_http.c_ora_unauthorized, 'credenciales invalidas');
     END IF;
 
     -- Devuelve la lista de negocios para que el front elija (select-client emite el JWT).
@@ -131,7 +131,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_auth_api AS
     EXCEPTION
       WHEN NO_DATA_FOUND THEN
         pkg_esign_session.end_bootstrap;
-        raise_application_error(-20403, 'el usuario no pertenece a ese negocio');
+        raise_application_error(pkg_esign_http.c_ora_forbidden, 'el usuario no pertenece a ese negocio');
     END;
     pkg_esign_session.end_bootstrap;
 
@@ -197,10 +197,10 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_auth_api AS
     l_user_id   users.id_user%TYPE;
   BEGIN
     IF l_role <> 'owner' THEN
-      raise_application_error(-20403, 'solo el owner puede invitar usuarios');
+      raise_application_error(pkg_esign_http.c_ora_forbidden, 'solo el owner puede invitar usuarios');
     END IF;
     IF l_inv_role NOT IN ('owner','developer','analyst') THEN
-      raise_application_error(-20400, 'role invalido');
+      raise_application_error(pkg_esign_http.c_ora_bad_request, 'role invalido');
     END IF;
 
     pkg_esign_session.set_client(l_client_id);
@@ -226,7 +226,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_auth_api AS
           p_out := pkg_esign_util.fn_ok(l_data);
         END;
       WHEN DUP_VAL_ON_INDEX THEN
-        raise_application_error(-20409, 'el usuario ya es miembro de este negocio');
+        raise_application_error(pkg_esign_http.c_ora_conflict, 'el usuario ya es miembro de este negocio');
     END;
   END pr_invite_user;
 

@@ -22,7 +22,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_apikey_api AS
   PROCEDURE assert_owner_or_dev(p_role IN VARCHAR2) IS
   BEGIN
     IF p_role NOT IN ('owner','developer') THEN
-      raise_application_error(-20403, 'solo owner/developer pueden gestionar API keys');
+      raise_application_error(pkg_esign_http.c_ora_forbidden, 'solo owner/developer pueden gestionar API keys');
     END IF;
   END assert_owner_or_dev;
 
@@ -36,7 +36,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_apikey_api AS
     assert_owner_or_dev(p_role);
     pkg_esign_session.set_client(p_client_id);
     IF l_env NOT IN ('TEST','PROD') THEN
-      raise_application_error(-20400, 'environment debe ser TEST o PROD');
+      raise_application_error(pkg_esign_http.c_ora_bad_request, 'environment debe ser TEST o PROD');
     END IF;
 
     l_secret := pkg_esign_util.fn_random_hex(24); -- 48 hex chars
@@ -92,13 +92,13 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_apikey_api AS
         FROM client WHERE sk_prod_hash = l_hash;
     ELSE
       pkg_esign_session.end_bootstrap;
-      raise_application_error(-20401, 'prefijo de API key invalido');
+      raise_application_error(pkg_esign_http.c_ora_unauthorized, 'prefijo de API key invalido');
     END IF;
     pkg_esign_session.end_bootstrap;
   EXCEPTION
     WHEN NO_DATA_FOUND THEN
       pkg_esign_session.end_bootstrap;
-      raise_application_error(-20401, 'API key invalida');
+      raise_application_error(pkg_esign_http.c_ora_unauthorized, 'API key invalida');
   END pr_resolve_key;
 
 END pkg_esign_apikey_api;

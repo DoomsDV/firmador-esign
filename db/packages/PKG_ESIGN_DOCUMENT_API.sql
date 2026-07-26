@@ -144,7 +144,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
                RETURNING CLOB)
         INTO l_data FROM document WHERE client_id = p_client_id AND cdc = p_cdc;
     EXCEPTION
-      WHEN NO_DATA_FOUND THEN raise_application_error(-20404, 'documento inexistente');
+      WHEN NO_DATA_FOUND THEN raise_application_error(pkg_esign_http.c_ora_not_found, 'documento inexistente');
     END;
     p_out := pkg_esign_util.fn_ok(l_data);
   END pr_get_document;
@@ -157,7 +157,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
         FROM document_xml x JOIN document d ON d.id_document = x.document_id
        WHERE d.client_id = p_client_id AND d.cdc = p_cdc;
     EXCEPTION
-      WHEN NO_DATA_FOUND THEN raise_application_error(-20404, 'XML inexistente');
+      WHEN NO_DATA_FOUND THEN raise_application_error(pkg_esign_http.c_ora_not_found, 'XML inexistente');
     END;
   END pr_get_xml;
 

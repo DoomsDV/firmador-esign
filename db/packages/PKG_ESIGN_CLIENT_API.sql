@@ -41,7 +41,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_client_api AS
   PROCEDURE assert_owner(p_role IN VARCHAR2) IS
   BEGIN
     IF p_role <> 'owner' THEN
-      raise_application_error(-20403, 'solo el owner puede modificar esta configuracion');
+      raise_application_error(pkg_esign_http.c_ora_forbidden, 'solo el owner puede modificar esta configuracion');
     END IF;
   END assert_owner;
 
@@ -134,7 +134,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_client_api AS
     assert_owner(p_role);
     pkg_esign_session.set_client(p_client_id);
     IF l_cod IS NULL THEN
-      raise_application_error(-20400, 'codigo de establecimiento obligatorio');
+      raise_application_error(pkg_esign_http.c_ora_bad_request, 'codigo de establecimiento obligatorio');
     END IF;
 
     MERGE INTO client_establecimiento e
@@ -182,7 +182,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_client_api AS
       SELECT id_establecimiento INTO l_estab_id
         FROM client_establecimiento WHERE client_id = p_client_id AND codigo = p_estab_codigo;
     EXCEPTION
-      WHEN NO_DATA_FOUND THEN raise_application_error(-20404, 'establecimiento inexistente');
+      WHEN NO_DATA_FOUND THEN raise_application_error(pkg_esign_http.c_ora_not_found, 'establecimiento inexistente');
     END;
 
     MERGE INTO client_punto_expedicion p
@@ -204,7 +204,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_client_api AS
     assert_owner(p_role);
     pkg_esign_session.set_client(p_client_id);
     IF l_env NOT IN ('TEST','PROD') THEN
-      raise_application_error(-20400, 'environment debe ser TEST o PROD');
+      raise_application_error(pkg_esign_http.c_ora_bad_request, 'environment debe ser TEST o PROD');
     END IF;
 
     -- csc_ciphertext/csc_nonce llegan en hex (cifrados por Go). Se guardan opacos.
@@ -323,7 +323,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_client_api AS
        WHERE client_id = p_client_id AND environment = UPPER(p_environment) AND is_active = 1;
     EXCEPTION
       WHEN NO_DATA_FOUND THEN
-        raise_application_error(-20404, 'el cliente no tiene CSC configurado para el ambiente '||p_environment);
+        raise_application_error(pkg_esign_http.c_ora_not_found, 'el cliente no tiene CSC configurado para el ambiente '||p_environment);
     END;
     -- fn_blob_hex tiene efectos (DBMS_LOB) => precomputar en variable antes del SQL.
     l_cthex := pkg_esign_util.fn_blob_hex(l_ct);

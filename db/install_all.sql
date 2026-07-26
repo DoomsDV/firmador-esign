@@ -31,6 +31,7 @@ PROMPT === Contexto de aplicacion + funciones de politica ===
 @@policies/02_fn_tenant_policy.sql
 
 PROMPT === Paquetes API ===
+@@packages/PKG_ESIGN_HTTP.sql
 @@packages/PKG_ESIGN_UTIL.sql
 @@packages/PKG_ESIGN_JWT.sql
 @@packages/PKG_ESIGN_AUTH_API.sql

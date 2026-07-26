@@ -111,7 +111,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_jwt AS
   EXCEPTION
     WHEN NO_DATA_FOUND THEN
       pkg_esign_session.end_bootstrap;
-      raise_application_error(-20401, 'refresh token invalido o expirado');
+      raise_application_error(pkg_esign_http.c_ora_unauthorized, 'refresh token invalido o expirado');
   END pr_refresh;
 
   PROCEDURE pr_revoke(p_refresh_token IN VARCHAR2) IS

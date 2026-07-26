@@ -33,7 +33,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_cert_api AS
     l_pwd BLOB;
   BEGIN
     IF p_role <> 'owner' THEN
-      raise_application_error(-20403, 'solo el owner puede subir el certificado');
+      raise_application_error(pkg_esign_http.c_ora_forbidden, 'solo el owner puede subir el certificado');
     END IF;
     pkg_esign_session.set_client(p_client_id);
 
@@ -82,7 +82,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_cert_api AS
       INTO p_p12_ciphertext, p_p12_nonce, p_pwd_ciphertext, p_pwd_nonce, p_key_version
       FROM client WHERE id_client = p_client_id;
     IF p_p12_ciphertext IS NULL THEN
-      raise_application_error(-20404, 'el cliente no tiene certificado cargado');
+      raise_application_error(pkg_esign_http.c_ora_not_found, 'el cliente no tiene certificado cargado');
     END IF;
   END pr_get_certificate;
 

@@ -2,9 +2,11 @@
 -- owa_util.get_cgi_env('AUTHORIZATION'), el body via l_body := :body_text (CLOB) y delegan en
 -- los paquetes PKG_ESIGN_*. La salida JSON se emite con htp.p. La autorizacion real (JWT) la
 -- valida cada paquete.
--- Nota: el cuerpo se lee UNA sola vez en l_body := :body_text (CLOB); :body es BLOB y no liga
--- con json_value/CLOB, y referenciar :body_text mas de una vez en el mismo handler falla
--- (ORDS-25001). Mismo patron que el modulo interno 02_*.
+-- Convenciones de los handlers:
+--   * El cuerpo se lee UNA sola vez en l_body := :body_text (CLOB); :body es BLOB y no liga
+--     con json_value/CLOB, y referenciar :body_text mas de una vez en el mismo handler falla.
+--   * Las llamadas a los paquetes usan notacion de parametros nombrados (p_x => valor).
+--   * Los codigos/mensajes HTTP salen de PKG_ESIGN_HTTP (sin numeros sueltos).
 BEGIN
   BEGIN
     ords.delete_module(p_module_name => 'esign');
@@ -26,9 +28,15 @@ BEGIN
     p_module_name => 'esign', p_pattern => 'auth/register', p_method => 'POST',
     p_source_type => ords.source_type_plsql,
     p_source => q'[
-DECLARE l_body CLOB := :body_text; l_out CLOB; BEGIN
-  pkg_esign_auth_api.pr_register(l_body, l_out);
-  htp.p(l_out);
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+BEGIN
+    pkg_esign_auth_api.pr_register(
+        p_body => l_body,
+        p_out  => l_out
+    );
+    htp.p(l_out);
 END;]');
 
   ords.define_template(p_module_name => 'esign', p_pattern => 'auth/login');
@@ -36,9 +44,15 @@ END;]');
     p_module_name => 'esign', p_pattern => 'auth/login', p_method => 'POST',
     p_source_type => ords.source_type_plsql,
     p_source => q'[
-DECLARE l_body CLOB := :body_text; l_out CLOB; BEGIN
-  pkg_esign_auth_api.pr_login(l_body, l_out);
-  htp.p(l_out);
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+BEGIN
+    pkg_esign_auth_api.pr_login(
+        p_body => l_body,
+        p_out  => l_out
+    );
+    htp.p(l_out);
 END;]');
 
   ords.define_template(p_module_name => 'esign', p_pattern => 'auth/select-client');
@@ -46,11 +60,16 @@ END;]');
     p_module_name => 'esign', p_pattern => 'auth/select-client', p_method => 'POST',
     p_source_type => ords.source_type_plsql,
     p_source => q'[
-DECLARE l_body CLOB := :body_text; l_out CLOB; BEGIN
-  pkg_esign_auth_api.pr_select_client(
-    TO_NUMBER(json_value(l_body, '$.user_id')),
-    TO_NUMBER(json_value(l_body, '$.client_id')), l_out);
-  htp.p(l_out);
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+BEGIN
+    pkg_esign_auth_api.pr_select_client(
+        p_user_id   => TO_NUMBER(json_value(l_body, '$.user_id')),
+        p_client_id => TO_NUMBER(json_value(l_body, '$.client_id')),
+        p_out       => l_out
+    );
+    htp.p(l_out);
 END;]');
 
   ords.define_template(p_module_name => 'esign', p_pattern => 'auth/my-clients');
@@ -58,10 +77,16 @@ END;]');
     p_module_name => 'esign', p_pattern => 'auth/my-clients', p_method => 'GET',
     p_source_type => ords.source_type_plsql,
     p_source => q'[
-DECLARE l_out CLOB; l_uid NUMBER; BEGIN
-  l_uid := pkg_esign_util.fn_get_user_id_from_jwt(owa_util.get_cgi_env('AUTHORIZATION'));
-  pkg_esign_auth_api.pr_list_my_clients(l_uid, l_out);
-  htp.p(l_out);
+DECLARE
+    l_out CLOB;
+    l_uid NUMBER;
+BEGIN
+    l_uid := pkg_esign_util.fn_get_user_id_from_jwt(owa_util.get_cgi_env('AUTHORIZATION'));
+    pkg_esign_auth_api.pr_list_my_clients(
+        p_user_id => l_uid,
+        p_out     => l_out
+    );
+    htp.p(l_out);
 END;]');
 
   ords.define_template(p_module_name => 'esign', p_pattern => 'auth/refresh');
@@ -69,22 +94,46 @@ END;]');
     p_module_name => 'esign', p_pattern => 'auth/refresh', p_method => 'POST',
     p_source_type => ords.source_type_plsql,
     p_source => q'[
-DECLARE l_body CLOB := :body_text; l_out CLOB; BEGIN pkg_esign_auth_api.pr_refresh(l_body, l_out); htp.p(l_out); END;]');
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+BEGIN
+    pkg_esign_auth_api.pr_refresh(
+        p_body => l_body,
+        p_out  => l_out
+    );
+    htp.p(l_out);
+END;]');
 
   ords.define_template(p_module_name => 'esign', p_pattern => 'auth/logout');
   ords.define_handler(
     p_module_name => 'esign', p_pattern => 'auth/logout', p_method => 'POST',
     p_source_type => ords.source_type_plsql,
     p_source => q'[
-DECLARE l_body CLOB := :body_text; l_out CLOB; BEGIN pkg_esign_auth_api.pr_logout(l_body, l_out); htp.p(l_out); END;]');
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+BEGIN
+    pkg_esign_auth_api.pr_logout(
+        p_body => l_body,
+        p_out  => l_out
+    );
+    htp.p(l_out);
+END;]');
 
   ords.define_template(p_module_name => 'esign', p_pattern => 'auth/me');
   ords.define_handler(
     p_module_name => 'esign', p_pattern => 'auth/me', p_method => 'GET',
     p_source_type => ords.source_type_plsql,
     p_source => q'[
-DECLARE l_out CLOB; BEGIN
-  pkg_esign_auth_api.pr_me(owa_util.get_cgi_env('AUTHORIZATION'), l_out); htp.p(l_out);
+DECLARE
+    l_out CLOB;
+BEGIN
+    pkg_esign_auth_api.pr_me(
+        p_authorization => owa_util.get_cgi_env('AUTHORIZATION'),
+        p_out           => l_out
+    );
+    htp.p(l_out);
 END;]');
 
   ---------------------------------------------------------------------------
@@ -95,19 +144,32 @@ END;]');
     p_module_name => 'esign', p_pattern => 'client', p_method => 'GET',
     p_source_type => ords.source_type_plsql,
     p_source => q'[
-DECLARE l_out CLOB; l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION'); BEGIN
-  pkg_esign_client_api.pr_get_client(pkg_esign_util.fn_get_client_id_from_jwt(l_auth), l_out);
-  htp.p(l_out);
+DECLARE
+    l_out  CLOB;
+    l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION');
+BEGIN
+    pkg_esign_client_api.pr_get_client(
+        p_client_id => pkg_esign_util.fn_get_client_id_from_jwt(l_auth),
+        p_out       => l_out
+    );
+    htp.p(l_out);
 END;]');
   ords.define_handler(
     p_module_name => 'esign', p_pattern => 'client', p_method => 'PUT',
     p_source_type => ords.source_type_plsql,
     p_source => q'[
-DECLARE l_body CLOB := :body_text; l_out CLOB; l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION'); BEGIN
-  pkg_esign_client_api.pr_upsert_emisor(
-    pkg_esign_util.fn_get_client_id_from_jwt(l_auth),
-    pkg_esign_util.fn_get_role_from_jwt(l_auth), l_body, l_out);
-  htp.p(l_out);
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+    l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION');
+BEGIN
+    pkg_esign_client_api.pr_upsert_emisor(
+        p_client_id => pkg_esign_util.fn_get_client_id_from_jwt(l_auth),
+        p_role      => pkg_esign_util.fn_get_role_from_jwt(l_auth),
+        p_body      => l_body,
+        p_out       => l_out
+    );
+    htp.p(l_out);
 END;]');
 
   ---------------------------------------------------------------------------
@@ -118,19 +180,32 @@ END;]');
     p_module_name => 'esign', p_pattern => 'establecimientos', p_method => 'GET',
     p_source_type => ords.source_type_plsql,
     p_source => q'[
-DECLARE l_out CLOB; l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION'); BEGIN
-  pkg_esign_client_api.pr_list_establecimiento(pkg_esign_util.fn_get_client_id_from_jwt(l_auth), l_out);
-  htp.p(l_out);
+DECLARE
+    l_out  CLOB;
+    l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION');
+BEGIN
+    pkg_esign_client_api.pr_list_establecimiento(
+        p_client_id => pkg_esign_util.fn_get_client_id_from_jwt(l_auth),
+        p_out       => l_out
+    );
+    htp.p(l_out);
 END;]');
   ords.define_handler(
     p_module_name => 'esign', p_pattern => 'establecimientos', p_method => 'POST',
     p_source_type => ords.source_type_plsql,
     p_source => q'[
-DECLARE l_body CLOB := :body_text; l_out CLOB; l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION'); BEGIN
-  pkg_esign_client_api.pr_upsert_establecimiento(
-    pkg_esign_util.fn_get_client_id_from_jwt(l_auth),
-    pkg_esign_util.fn_get_role_from_jwt(l_auth), l_body, l_out);
-  htp.p(l_out);
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+    l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION');
+BEGIN
+    pkg_esign_client_api.pr_upsert_establecimiento(
+        p_client_id => pkg_esign_util.fn_get_client_id_from_jwt(l_auth),
+        p_role      => pkg_esign_util.fn_get_role_from_jwt(l_auth),
+        p_body      => l_body,
+        p_out       => l_out
+    );
+    htp.p(l_out);
 END;]');
 
   ords.define_template(p_module_name => 'esign', p_pattern => 'establecimientos/:codigo/puntos');
@@ -138,11 +213,19 @@ END;]');
     p_module_name => 'esign', p_pattern => 'establecimientos/:codigo/puntos', p_method => 'POST',
     p_source_type => ords.source_type_plsql,
     p_source => q'[
-DECLARE l_body CLOB := :body_text; l_out CLOB; l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION'); BEGIN
-  pkg_esign_client_api.pr_upsert_punto(
-    pkg_esign_util.fn_get_client_id_from_jwt(l_auth),
-    pkg_esign_util.fn_get_role_from_jwt(l_auth), :codigo, l_body, l_out);
-  htp.p(l_out);
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+    l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION');
+BEGIN
+    pkg_esign_client_api.pr_upsert_punto(
+        p_client_id    => pkg_esign_util.fn_get_client_id_from_jwt(l_auth),
+        p_role         => pkg_esign_util.fn_get_role_from_jwt(l_auth),
+        p_estab_codigo => :codigo,
+        p_body         => l_body,
+        p_out          => l_out
+    );
+    htp.p(l_out);
 END;]');
 
   ---------------------------------------------------------------------------
@@ -153,11 +236,18 @@ END;]');
     p_module_name => 'esign', p_pattern => 'environments', p_method => 'PUT',
     p_source_type => ords.source_type_plsql,
     p_source => q'[
-DECLARE l_body CLOB := :body_text; l_out CLOB; l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION'); BEGIN
-  pkg_esign_client_api.pr_upsert_env(
-    pkg_esign_util.fn_get_client_id_from_jwt(l_auth),
-    pkg_esign_util.fn_get_role_from_jwt(l_auth), l_body, l_out);
-  htp.p(l_out);
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+    l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION');
+BEGIN
+    pkg_esign_client_api.pr_upsert_env(
+        p_client_id => pkg_esign_util.fn_get_client_id_from_jwt(l_auth),
+        p_role      => pkg_esign_util.fn_get_role_from_jwt(l_auth),
+        p_body      => l_body,
+        p_out       => l_out
+    );
+    htp.p(l_out);
 END;]');
 
   ---------------------------------------------------------------------------
@@ -168,9 +258,15 @@ END;]');
     p_module_name => 'esign', p_pattern => 'api-keys', p_method => 'GET',
     p_source_type => ords.source_type_plsql,
     p_source => q'[
-DECLARE l_out CLOB; l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION'); BEGIN
-  pkg_esign_apikey_api.pr_get_keys_meta(pkg_esign_util.fn_get_client_id_from_jwt(l_auth), l_out);
-  htp.p(l_out);
+DECLARE
+    l_out  CLOB;
+    l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION');
+BEGIN
+    pkg_esign_apikey_api.pr_get_keys_meta(
+        p_client_id => pkg_esign_util.fn_get_client_id_from_jwt(l_auth),
+        p_out       => l_out
+    );
+    htp.p(l_out);
 END;]');
 
   ords.define_template(p_module_name => 'esign', p_pattern => 'api-keys/:env/rotate');
@@ -178,11 +274,17 @@ END;]');
     p_module_name => 'esign', p_pattern => 'api-keys/:env/rotate', p_method => 'POST',
     p_source_type => ords.source_type_plsql,
     p_source => q'[
-DECLARE l_out CLOB; l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION'); BEGIN
-  pkg_esign_apikey_api.pr_rotate_key(
-    pkg_esign_util.fn_get_client_id_from_jwt(l_auth),
-    pkg_esign_util.fn_get_role_from_jwt(l_auth), UPPER(:env), l_out);
-  htp.p(l_out);
+DECLARE
+    l_out  CLOB;
+    l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION');
+BEGIN
+    pkg_esign_apikey_api.pr_rotate_key(
+        p_client_id   => pkg_esign_util.fn_get_client_id_from_jwt(l_auth),
+        p_role        => pkg_esign_util.fn_get_role_from_jwt(l_auth),
+        p_environment => UPPER(:env),
+        p_out         => l_out
+    );
+    htp.p(l_out);
 END;]');
 
   ---------------------------------------------------------------------------
@@ -193,19 +295,32 @@ END;]');
     p_module_name => 'esign', p_pattern => 'certificate', p_method => 'GET',
     p_source_type => ords.source_type_plsql,
     p_source => q'[
-DECLARE l_out CLOB; l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION'); BEGIN
-  pkg_esign_cert_api.pr_get_meta(pkg_esign_util.fn_get_client_id_from_jwt(l_auth), l_out);
-  htp.p(l_out);
+DECLARE
+    l_out  CLOB;
+    l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION');
+BEGIN
+    pkg_esign_cert_api.pr_get_meta(
+        p_client_id => pkg_esign_util.fn_get_client_id_from_jwt(l_auth),
+        p_out       => l_out
+    );
+    htp.p(l_out);
 END;]');
   ords.define_handler(
     p_module_name => 'esign', p_pattern => 'certificate', p_method => 'POST',
     p_source_type => ords.source_type_plsql,
     p_source => q'[
-DECLARE l_body CLOB := :body_text; l_out CLOB; l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION'); BEGIN
-  pkg_esign_cert_api.pr_put_certificate(
-    pkg_esign_util.fn_get_client_id_from_jwt(l_auth),
-    pkg_esign_util.fn_get_role_from_jwt(l_auth), l_body, l_out);
-  htp.p(l_out);
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+    l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION');
+BEGIN
+    pkg_esign_cert_api.pr_put_certificate(
+        p_client_id => pkg_esign_util.fn_get_client_id_from_jwt(l_auth),
+        p_role      => pkg_esign_util.fn_get_role_from_jwt(l_auth),
+        p_body      => l_body,
+        p_out       => l_out
+    );
+    htp.p(l_out);
 END;]');
 
   ---------------------------------------------------------------------------
@@ -217,13 +332,18 @@ END;]');
     p_source_type => ords.source_type_plsql,
     p_source => q'[
 DECLARE
-  l_out CLOB; l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION');
-  l_body CLOB;
+    l_out  CLOB;
+    l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION');
+    l_body CLOB;
 BEGIN
-  l_body := JSON_OBJECT('environment' VALUE :environment, 'estado' VALUE :estado,
-                        'tipo' VALUE :tipo, 'page' VALUE :page, 'pageSize' VALUE :pageSize RETURNING CLOB);
-  pkg_esign_document_api.pr_list_documents(pkg_esign_util.fn_get_client_id_from_jwt(l_auth), l_body, l_out);
-  htp.p(l_out);
+    l_body := JSON_OBJECT('environment' VALUE :environment, 'estado' VALUE :estado,
+                          'tipo' VALUE :tipo, 'page' VALUE :page, 'pageSize' VALUE :pageSize RETURNING CLOB);
+    pkg_esign_document_api.pr_list_documents(
+        p_client_id => pkg_esign_util.fn_get_client_id_from_jwt(l_auth),
+        p_body      => l_body,
+        p_out       => l_out
+    );
+    htp.p(l_out);
 END;]');
 
   ords.define_template(p_module_name => 'esign', p_pattern => 'documents/:cdc');
@@ -231,9 +351,16 @@ END;]');
     p_module_name => 'esign', p_pattern => 'documents/:cdc', p_method => 'GET',
     p_source_type => ords.source_type_plsql,
     p_source => q'[
-DECLARE l_out CLOB; l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION'); BEGIN
-  pkg_esign_document_api.pr_get_document(pkg_esign_util.fn_get_client_id_from_jwt(l_auth), :cdc, l_out);
-  htp.p(l_out);
+DECLARE
+    l_out  CLOB;
+    l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION');
+BEGIN
+    pkg_esign_document_api.pr_get_document(
+        p_client_id => pkg_esign_util.fn_get_client_id_from_jwt(l_auth),
+        p_cdc       => :cdc,
+        p_out       => l_out
+    );
+    htp.p(l_out);
 END;]');
 
   ords.define_template(p_module_name => 'esign', p_pattern => 'documents/:cdc/xml');
@@ -241,10 +368,17 @@ END;]');
     p_module_name => 'esign', p_pattern => 'documents/:cdc/xml', p_method => 'GET',
     p_source_type => ords.source_type_plsql,
     p_source => q'[
-DECLARE l_out CLOB; l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION'); BEGIN
-  owa_util.mime_header('application/xml', FALSE); owa_util.http_header_close;
-  pkg_esign_document_api.pr_get_xml(pkg_esign_util.fn_get_client_id_from_jwt(l_auth), :cdc, l_out);
-  htp.prn(l_out);
+DECLARE
+    l_out  CLOB;
+    l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION');
+BEGIN
+    owa_util.mime_header('application/xml', FALSE); owa_util.http_header_close;
+    pkg_esign_document_api.pr_get_xml(
+        p_client_id => pkg_esign_util.fn_get_client_id_from_jwt(l_auth),
+        p_cdc       => :cdc,
+        p_out       => l_out
+    );
+    htp.prn(l_out);
 END;]');
 
   COMMIT;

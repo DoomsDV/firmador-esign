@@ -113,7 +113,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_util AS
     l_jwt   apex_jwt.t_token;
   BEGIN
     IF l_token IS NULL THEN
-      raise_application_error(-20401, 'token ausente');
+      raise_application_error(pkg_esign_http.c_ora_unauthorized, 'token ausente');
     END IF;
     l_jwt := apex_jwt.decode(
       p_value         => l_token,
