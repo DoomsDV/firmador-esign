@@ -6,7 +6,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+# Build nativo del host (el VPS OCI es aarch64; en amd64 produce amd64).
+RUN CGO_ENABLED=0 GOOS=linux \
     go build -trimpath -ldflags="-s -w" -o /out/firmador ./cmd/server
 
 FROM gcr.io/distroless/static-debian12:nonroot
