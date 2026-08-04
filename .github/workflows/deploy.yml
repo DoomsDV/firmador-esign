@@ -1,0 +1,44 @@
+# CI/CD: push a staging/main -> SSH al VPS OCI y corre el script de deploy local.
+# Secrets requeridos en el repo (Settings > Secrets and variables > Actions):
+#   SERVER_IP        = 147.15.75.118
+#   SSH_USER         = opc
+#   SSH_PRIVATE_KEY  = contenido completo de ssh-key-2026-07-25.key (incl. BEGIN/END)
+name: Deploy etick firmador (Oracle Cloud)
+
+on:
+  push:
+    branches:
+      - staging
+      - main
+
+concurrency:
+  group: deploy-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy staging (api-staging.etick.uno)
+        if: github.ref == 'refs/heads/staging'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          command_timeout: 20m
+          script_stop: true
+          script: |
+            /home/opc/deploy-staging.sh
+
+      - name: Deploy produccion (api.etick.uno)
+        if: github.ref == 'refs/heads/main'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          command_timeout: 20m
+          script_stop: true
+          script: |
+            /home/opc/deploy-main.sh
