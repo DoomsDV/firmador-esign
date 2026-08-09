@@ -15,6 +15,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/DoomsDV/firmador-e/internal/config"
+	"github.com/DoomsDV/firmador-e/internal/gotenberg"
 	"github.com/DoomsDV/firmador-e/internal/kude"
 	"github.com/DoomsDV/firmador-e/internal/sifen"
 )
@@ -225,9 +226,22 @@ func main() {
 	fmt.Printf("\n✅ XML Generado: %s\n", fileName)
 
 	if *genKude {
-		pdf, err := kude.RenderKuDE(rde, qrURL)
+		kudeData, err := kude.BuildKudeData(rde, qrURL, cfg.SifenEnv, kude.Branding{
+			TemplateID: kude.TemplateMinimalista,
+		})
 		if err != nil {
-			log.Fatalf("❌ generando KuDE: %v", err)
+			log.Fatalf("❌ armando datos del KuDE: %v", err)
+		}
+		html, err := kude.RenderKuDEHTML(kudeData)
+		if err != nil {
+			log.Fatalf("❌ renderizando HTML del KuDE: %v", err)
+		}
+		gotenbergURL := envOr("GOTENBERG_URL", "http://localhost:3000")
+		gtCtx, gtCancel := context.WithTimeout(context.Background(), gotenberg.DefaultTimeout)
+		pdf, err := gotenberg.New(gotenbergURL, 0).Render(gtCtx, html)
+		gtCancel()
+		if err != nil {
+			log.Fatalf("❌ generando KuDE (Gotenberg en %s): %v", gotenbergURL, err)
 		}
 		pdfName := fmt.Sprintf("%s_%s.pdf", *tipoDoc, cdc)
 		if err := os.WriteFile(pdfName, pdf, 0644); err != nil {

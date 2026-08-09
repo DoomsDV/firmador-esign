@@ -10,6 +10,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
+	"github.com/DoomsDV/firmador-e/internal/kude"
 	"github.com/DoomsDV/firmador-e/internal/sifen"
 	"github.com/DoomsDV/firmador-e/internal/tenant"
 )
@@ -122,6 +123,10 @@ func (s *Server) handleCreateDocument(w http.ResponseWriter, r *http.Request) {
 	res := parseSifenResult(body)
 	estado := estadoDE(res.CodRes)
 	s.persistDocument(ctx, cfg, build, cdc, numeroDoc, totGralOpe, qrURL, xmlOut, res, estado)
+
+	if estado == "APROBADO" {
+		s.triggerKudeGeneration(cfg, rde, qrURL, cdc)
+	}
 
 	status := http.StatusCreated
 	if estado != "APROBADO" {
@@ -303,4 +308,41 @@ func (s *Server) sendEvento(ctx context.Context, cfg *tenant.Config, ev *sifen.R
 // eventID genera un id de evento único por segundo (suficiente para el dId).
 func eventID() int {
 	return int(time.Now().Unix() % 1000000000)
+}
+
+// triggerKudeGeneration arma los datos del KuDE en la goroutine de la request
+// (rde/*etree.Document no son concurrency-safe: no cruzan a otra goroutine) y
+// lanza el render+subida en background con contexto propio. Best-effort: un
+// fallo de Gotenberg/ORDS nunca afecta la respuesta ya enviada al cliente.
+func (s *Server) triggerKudeGeneration(cfg *tenant.Config, rde *sifen.RDE, qrURL, cdc string) {
+	data, err := kude.BuildKudeData(rde, qrURL, cfg.EnvUpper(), kude.Branding{
+		TemplateID:    cfg.KudeConfig.TemplateID,
+		ColorPrimario: cfg.KudeConfig.ColorPrimario,
+		LogoURL:       cfg.KudeConfig.LogoURL,
+		NotasFooter:   cfg.KudeConfig.NotasFooter,
+	})
+	if err != nil {
+		fmt.Printf("[warn] kude %s: armando datos: %v\n", cdc, err)
+		return
+	}
+	clientID := cfg.ClientID
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), s.kudeTimeout)
+		defer cancel()
+
+		html, err := kude.RenderKuDEHTML(data)
+		if err != nil {
+			fmt.Printf("[warn] kude %s: renderizando HTML: %v\n", cdc, err)
+			return
+		}
+		pdf, err := s.gotenberg.Render(ctx, html)
+		if err != nil {
+			fmt.Printf("[warn] kude %s: Gotenberg: %v\n", cdc, err)
+			return
+		}
+		if _, err := s.resolver.ORDS().UploadKude(ctx, clientID, cdc, pdf); err != nil {
+			fmt.Printf("[warn] kude %s: subiendo a OCI: %v\n", cdc, err)
+		}
+	}()
 }

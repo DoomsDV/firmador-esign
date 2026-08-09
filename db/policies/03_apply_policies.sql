@@ -18,7 +18,8 @@ DECLARE
     'DOCUMENT',
     'DOCUMENT_XML',
     'DOCUMENT_EVENT',
-    'API_LOG'
+    'API_LOG',
+    'CLIENT_KUDE_CONFIG'
   );
 
   PROCEDURE add_policy(p_table VARCHAR2, p_func VARCHAR2) IS

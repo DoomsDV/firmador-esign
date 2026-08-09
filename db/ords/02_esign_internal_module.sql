@@ -198,6 +198,38 @@ BEGIN
 END;]');
 
   ---------------------------------------------------------------------------
+  -- KUDE: Go sube el PDF ya renderizado (Gotenberg) al bucket OCI y lo asocia al CDC.
+  ---------------------------------------------------------------------------
+  ords.define_template(p_module_name => 'esign_internal', p_pattern => 'kude');
+  ords.define_handler(
+    p_module_name => 'esign_internal', p_pattern => 'kude', p_method => 'POST',
+    p_source_type => ords.source_type_plsql,
+    p_source => q'[
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+BEGIN
+    IF NOT pkg_esign_util.fn_service_token_ok(owa_util.get_cgi_env('X-Service-Token')) THEN
+        pkg_esign_http.pr_error(
+            p_status  => pkg_esign_http.c_unauthorized,
+            p_reason  => pkg_esign_http.m_unauthorized,
+            p_code    => pkg_esign_http.e_unauthorized,
+            p_message => pkg_esign_http.msg_service_token
+        );
+        RETURN;
+    END IF;
+
+    pkg_esign_kude_api.pr_store_kude(
+        p_client_id => TO_NUMBER(json_value(l_body, '$.client_id')),
+        p_cdc       => json_value(l_body, '$.cdc'),
+        p_pdf_hex   => json_value(l_body, '$.pdf_hex' RETURNING CLOB),
+        p_out       => l_out
+    );
+    COMMIT;
+    htp.p(l_out);
+END;]');
+
+  ---------------------------------------------------------------------------
   -- DOCUMENTS/PENDING-RETRY: lista FIRMADO con xml (worker Go).
   ---------------------------------------------------------------------------
   ords.define_template(p_module_name => 'esign_internal', p_pattern => 'documents/pending-retry');

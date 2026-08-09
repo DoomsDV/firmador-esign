@@ -3,6 +3,7 @@ package tenant
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -148,6 +149,12 @@ type contextResponse struct {
 		IdCSC               string `json:"id_csc"`
 		KeyVersion          int    `json:"key_version"`
 	} `json:"sifen_env"`
+	KudeConfig struct {
+		TemplateID    string `json:"template_id"`
+		ColorPrimario string `json:"color_primario"`
+		LogoURL       string `json:"logo_url"`
+		NotasFooter   string `json:"notas_footer"`
+	} `json:"kude_config"`
 }
 
 type geoJSON struct {
@@ -317,6 +324,25 @@ type LogEntry struct {
 
 func (c *ORDSClient) Log(ctx context.Context, entry LogEntry) error {
 	return c.post(ctx, "logs", entry, nil)
+}
+
+// UploadKude sube el PDF ya renderizado (Gotenberg) al bucket OCI vía el paquete
+// PL/SQL (mismo patrón que StoreCertificate/StoreEnvironment: el binario cruza en
+// hex). Devuelve la URL pública del objeto. Best-effort: el llamador no debe fallar
+// la emisión SIFEN si esto devuelve error.
+func (c *ORDSClient) UploadKude(ctx context.Context, clientID int, cdc string, pdf []byte) (string, error) {
+	var out struct {
+		KudeURL string `json:"kude_url"`
+	}
+	err := c.post(ctx, "kude", map[string]any{
+		"client_id": clientID,
+		"cdc":       cdc,
+		"pdf_hex":   hex.EncodeToString(pdf),
+	}, &out)
+	if err != nil {
+		return "", err
+	}
+	return out.KudeURL, nil
 }
 
 func truncate(s string, n int) string {

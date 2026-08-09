@@ -302,7 +302,8 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_client_api AS
                                   'id_csc' VALUE se.id_csc, 'key_version' VALUE se.key_version
                                   RETURNING CLOB)
                  FROM client_sifen_env se
-                WHERE se.client_id = c.id_client AND se.environment = p_environment AND se.is_active = 1) FORMAT JSON
+                WHERE se.client_id = c.id_client AND se.environment = p_environment AND se.is_active = 1) FORMAT JSON,
+             'kude_config' VALUE pkg_esign_kude_api.fn_config_json(c.id_client) FORMAT JSON
              RETURNING CLOB)
       INTO l_data
       FROM client c WHERE c.id_client = p_client_id;

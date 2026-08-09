@@ -24,6 +24,16 @@ type Config struct {
 	Emisor           EmisorConfig
 	Establecimientos []Establecimiento
 	Timbrado         TimbradoConfig // del ambiente resuelto
+	KudeConfig       KudeConfig     // branding del KuDE (plantilla/color/logo/footer)
+}
+
+// KudeConfig es el branding del KuDE (client_kude_config): plantilla, color
+// primario, logo y notas de pie. Se usa al renderizar el HTML en internal/kude.
+type KudeConfig struct {
+	TemplateID    string
+	ColorPrimario string
+	LogoURL       string
+	NotasFooter   string
 }
 
 // EmisorConfig son los datos del emisor a nivel contribuyente (no la sucursal).
@@ -316,6 +326,12 @@ func toConfig(resp *contextResponse) (*Config, error) {
 			IdCSC:               resp.SifenEnv.IdCSC,
 			KeyVersion:          resp.SifenEnv.KeyVersion,
 		}
+	}
+	cfg.KudeConfig = KudeConfig{
+		TemplateID:    resp.KudeConfig.TemplateID,
+		ColorPrimario: resp.KudeConfig.ColorPrimario,
+		LogoURL:       resp.KudeConfig.LogoURL,
+		NotasFooter:   resp.KudeConfig.NotasFooter,
 	}
 	return cfg, nil
 }

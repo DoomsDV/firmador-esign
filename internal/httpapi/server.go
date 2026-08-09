@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/DoomsDV/firmador-e/internal/gotenberg"
 	"github.com/DoomsDV/firmador-e/internal/tenant"
 )
 
@@ -12,6 +13,12 @@ type ServerOptions struct {
 	JWTSecret   []byte // bytes ASCII de app_parameter.JWT_TOKEN
 	JWTIssuer   string // default esign-api
 	JWTAudience string // default esign-app
+
+	// GotenbergURL es la base del servicio Gotenberg usado para renderizar el
+	// KuDE (PDF). Vacío deshabilita la generación (queda logueada como warning).
+	GotenbergURL string
+	// KudeTimeout acota el render+subida asíncrona del KuDE. <=0 usa el default.
+	KudeTimeout time.Duration
 }
 
 // Server expone el motor de emisión SIFEN como API HTTP multi-tenant.
@@ -21,6 +28,9 @@ type Server struct {
 	jwtSecret   []byte
 	jwtIssuer   string
 	jwtAudience string
+
+	gotenberg   *gotenberg.Client
+	kudeTimeout time.Duration
 }
 
 // New crea el servidor con el resolver de tenants ya configurado.
@@ -37,12 +47,18 @@ func New(resolver *tenant.Resolver, opts ServerOptions) *Server {
 	if aud == "" {
 		aud = "esign-app"
 	}
+	kudeTimeout := opts.KudeTimeout
+	if kudeTimeout <= 0 {
+		kudeTimeout = gotenberg.DefaultTimeout
+	}
 	return &Server{
 		resolver:    resolver,
 		tz:          tz,
 		jwtSecret:   opts.JWTSecret,
 		jwtIssuer:   issuer,
 		jwtAudience: aud,
+		gotenberg:   gotenberg.New(opts.GotenbergURL, kudeTimeout),
+		kudeTimeout: kudeTimeout,
 	}
 }
 

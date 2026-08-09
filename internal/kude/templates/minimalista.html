@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>KuDE {{ .CDC }}</title>
+<style>
+  @page { size: A4; margin: 12mm; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    font-size: 10px;
+    color: #1e293b;
+    -webkit-print-color-adjust: exact;
+  }
+  .leyenda-prueba {
+    text-align: center;
+    background: #fef3c7;
+    color: #92400e;
+    font-weight: 700;
+    font-size: 9px;
+    letter-spacing: .03em;
+    padding: 4px 0;
+    margin-bottom: 10px;
+    border-radius: 3px;
+  }
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    border-bottom: 2px solid {{ .ColorPrimario }};
+    padding-bottom: 10px;
+    margin-bottom: 12px;
+  }
+  .header .emisor { max-width: 60%; }
+  .header .logo { max-height: 56px; max-width: 160px; object-fit: contain; margin-bottom: 6px; }
+  .header .emisor h1 { font-size: 15px; margin: 0 0 2px; color: {{ .ColorPrimario }}; }
+  .header .emisor .fantasia { font-size: 10px; color: #64748b; margin-bottom: 4px; }
+  .header .emisor p { margin: 1px 0; font-size: 9px; color: #475569; }
+
+  .timbrado {
+    border: 1px solid {{ .ColorPrimario }};
+    border-radius: 6px;
+    padding: 8px 10px;
+    min-width: 220px;
+    text-align: right;
+  }
+  .timbrado .tipo { font-size: 12px; font-weight: 700; color: {{ .ColorPrimario }}; margin-bottom: 4px; }
+  .timbrado .numdoc { font-size: 14px; font-weight: 700; letter-spacing: .04em; margin-bottom: 4px; }
+  .timbrado p { margin: 1px 0; font-size: 9px; color: #475569; }
+
+  .receptor {
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-bottom: 10px;
+  }
+  .receptor .label { font-size: 8px; text-transform: uppercase; letter-spacing: .05em; color: #94a3b8; margin-bottom: 3px; }
+  .receptor .fila { display: flex; gap: 18px; flex-wrap: wrap; }
+  .receptor .fila div { font-size: 9.5px; }
+  .receptor .fila b { color: #334155; }
+
+  table.items { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+  table.items thead th {
+    background: {{ .ColorPrimario }};
+    color: #fff;
+    font-size: 8.5px;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+    padding: 6px 6px;
+    text-align: left;
+  }
+  table.items thead th.num { text-align: right; }
+  table.items tbody td { padding: 5px 6px; border-bottom: 1px solid #f1f5f9; font-size: 9.5px; }
+  table.items tbody td.num { text-align: right; white-space: nowrap; }
+  table.items tbody tr:nth-child(even) { background: #f8fafc; }
+
+  .resumen {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 12px;
+  }
+  .resumen table { border-collapse: collapse; min-width: 260px; }
+  .resumen td { padding: 3px 8px; font-size: 9.5px; }
+  .resumen td.k { color: #64748b; text-align: right; }
+  .resumen td.v { text-align: right; font-weight: 600; white-space: nowrap; }
+  .resumen tr.total td { border-top: 2px solid {{ .ColorPrimario }}; font-size: 12px; padding-top: 6px; }
+  .resumen tr.total td.v { color: {{ .ColorPrimario }}; }
+
+  .footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    border-top: 1px solid #e2e8f0;
+    padding-top: 10px;
+  }
+  .footer .qr img { width: 90px; height: 90px; }
+  .footer .cdc { font-size: 8px; color: #94a3b8; margin-top: 4px; word-break: break-all; max-width: 260px; }
+  .footer .notas { font-size: 8.5px; color: #64748b; max-width: 320px; text-align: right; }
+  .footer .kude-title { font-size: 9px; font-weight: 700; color: {{ .ColorPrimario }}; text-align: right; margin-bottom: 3px; }
+</style>
+</head>
+<body>
+  {{ if .MostrarLeyendaPrueba }}<div class="leyenda-prueba">{{ .LeyendaPrueba }}</div>{{ end }}
+
+  <div class="header">
+    <div class="emisor">
+      {{ if .LogoURL }}<img class="logo" src="{{ .LogoURL }}" alt="logo">{{ end }}
+      <h1>{{ .Emisor.Nombre }}</h1>
+      {{ if .Emisor.Fantasia }}<div class="fantasia">{{ .Emisor.Fantasia }}</div>{{ end }}
+      <p>RUC: {{ .Emisor.RUC }}</p>
+      <p>{{ .Emisor.Direccion }}</p>
+      {{ if .Emisor.Actividad }}<p>{{ .Emisor.Actividad }}</p>{{ end }}
+      {{ if .Emisor.Telefono }}<p>Tel: {{ .Emisor.Telefono }}{{ if .Emisor.Email }} · {{ .Emisor.Email }}{{ end }}</p>{{ end }}
+    </div>
+    <div class="timbrado">
+      <div class="tipo">{{ .Timbrado.TipoDocDesc }}</div>
+      <div class="numdoc">{{ .Timbrado.Establecimiento }}-{{ .Timbrado.PuntoExp }}-{{ .Timbrado.NumeroDoc }}</div>
+      <p>Timbrado N°: {{ .Timbrado.NumTimbrado }}</p>
+      <p>Inicio vigencia: {{ .Timbrado.FeIniT }}</p>
+      <p>Fecha emisión: {{ .FechaEmision }}</p>
+      <p>Condición: {{ .Condicion }}</p>
+    </div>
+  </div>
+
+  <div class="receptor">
+    <div class="label">Receptor</div>
+    <div class="fila">
+      <div><b>Nombre:</b> {{ .Receptor.Nombre }}</div>
+      <div><b>Identificación:</b> {{ .Receptor.Identificacion }}</div>
+    </div>
+  </div>
+
+  <table class="items">
+    <thead>
+      <tr>
+        <th>Código</th>
+        <th>Descripción</th>
+        <th class="num">Cant.</th>
+        <th class="num">P. Unitario</th>
+        <th class="num">IVA %</th>
+        <th class="num">Total</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{ range .Items }}
+      <tr>
+        <td>{{ .Codigo }}</td>
+        <td>{{ .Descripcion }}</td>
+        <td class="num">{{ .Cantidad }}</td>
+        <td class="num">{{ .PrecioUnitario }}</td>
+        <td class="num">{{ .TasaIVA }}</td>
+        <td class="num">{{ .Total }}</td>
+      </tr>
+      {{ end }}
+    </tbody>
+  </table>
+
+  {{ if .Totales }}
+  <div class="resumen">
+    <table>
+      <tr><td class="k">Subtotal exento</td><td class="v">{{ .Totales.SubExe }}</td></tr>
+      <tr><td class="k">Subtotal exonerado</td><td class="v">{{ .Totales.SubExo }}</td></tr>
+      <tr><td class="k">Subtotal IVA 5%</td><td class="v">{{ .Totales.Sub5 }}</td></tr>
+      <tr><td class="k">Subtotal IVA 10%</td><td class="v">{{ .Totales.Sub10 }}</td></tr>
+      <tr><td class="k">Total IVA (5% + 10%)</td><td class="v">{{ .Totales.TotIVA }}</td></tr>
+      <tr class="total"><td class="k">Total {{ .Totales.Moneda }}</td><td class="v">{{ .Totales.TotGralOpe }}</td></tr>
+      {{ if .Totales.TotalGs }}<tr><td class="k">Total Gs.</td><td class="v">{{ .Totales.TotalGs }}</td></tr>{{ end }}
+    </table>
+  </div>
+  {{ end }}
+
+  <div class="footer">
+    <div class="qr">
+      <img src="data:image/png;base64,{{ .QRBase64 }}" alt="QR">
+      <div class="cdc">CDC: {{ .CDC }}</div>
+    </div>
+    <div class="notas">
+      <div class="kude-title">KuDE — Comprobante Único de DE</div>
+      {{ if .NotasFooter }}{{ .NotasFooter }}{{ end }}
+    </div>
+  </div>
+</body>
+</html>

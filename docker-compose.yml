@@ -1,0 +1,16 @@
+# Entorno local de desarrollo: Gotenberg (Chromium headless) para renderizar el KuDE
+# a partir del HTML generado por internal/kude. Sin volumenes persistentes: es un
+# servicio de renderizado sin estado (stateless), igual en local y en el VPS.
+#
+# Uso: docker compose up -d gotenberg
+# El firmador (cmd/server) apunta a GOTENBERG_URL=http://localhost:3000 (ver .env.example).
+services:
+  gotenberg:
+    image: gotenberg/gotenberg:8
+    container_name: firmador-gotenberg
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    command:
+      - "gotenberg"
+      - "--chromium-disable-javascript=false"

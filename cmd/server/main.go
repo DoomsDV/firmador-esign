@@ -45,9 +45,11 @@ func main() {
 	}
 
 	srv := httpapi.New(resolver, httpapi.ServerOptions{
-		JWTSecret:   jwtSecret,
-		JWTIssuer:   envOr("ESIGN_JWT_ISSUER", "esign-api"),
-		JWTAudience: envOr("ESIGN_JWT_AUDIENCE", "esign-app"),
+		JWTSecret:    jwtSecret,
+		JWTIssuer:    envOr("ESIGN_JWT_ISSUER", "esign-api"),
+		JWTAudience:  envOr("ESIGN_JWT_AUDIENCE", "esign-app"),
+		GotenbergURL: envOr("GOTENBERG_URL", "http://localhost:3000"),
+		KudeTimeout:  parseTTL(os.Getenv("ESIGN_KUDE_TIMEOUT"), 20*time.Second),
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

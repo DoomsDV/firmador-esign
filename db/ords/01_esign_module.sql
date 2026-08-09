@@ -361,6 +361,63 @@ BEGIN
 END;]');
 
   ---------------------------------------------------------------------------
+  -- KUDE-CONFIG (branding: plantilla/color/logo/footer). Logo sube directo al
+  -- bucket OCI via PKG_ESIGN_BUCKET; el PDF final lo sube Go (plano interno).
+  ---------------------------------------------------------------------------
+  ords.define_template(p_module_name => 'esign', p_pattern => 'kude-config');
+  ords.define_handler(
+    p_module_name => 'esign', p_pattern => 'kude-config', p_method => 'GET',
+    p_source_type => ords.source_type_plsql,
+    p_source => q'[
+DECLARE
+    l_out  CLOB;
+    l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION');
+BEGIN
+    pkg_esign_kude_api.pr_get_config(
+        p_client_id => pkg_esign_util.fn_get_client_id_from_jwt(l_auth),
+        p_out       => l_out
+    );
+    htp.p(l_out);
+END;]');
+  ords.define_handler(
+    p_module_name => 'esign', p_pattern => 'kude-config', p_method => 'PUT',
+    p_source_type => ords.source_type_plsql,
+    p_source => q'[
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+    l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION');
+BEGIN
+    pkg_esign_kude_api.pr_upsert_config(
+        p_client_id => pkg_esign_util.fn_get_client_id_from_jwt(l_auth),
+        p_role      => pkg_esign_util.fn_get_role_from_jwt(l_auth),
+        p_body      => l_body,
+        p_out       => l_out
+    );
+    htp.p(l_out);
+END;]');
+
+  ords.define_template(p_module_name => 'esign', p_pattern => 'kude-config/logo');
+  ords.define_handler(
+    p_module_name => 'esign', p_pattern => 'kude-config/logo', p_method => 'POST',
+    p_source_type => ords.source_type_plsql,
+    p_source => q'[
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+    l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION');
+BEGIN
+    pkg_esign_kude_api.pr_upload_logo(
+        p_client_id => pkg_esign_util.fn_get_client_id_from_jwt(l_auth),
+        p_role      => pkg_esign_util.fn_get_role_from_jwt(l_auth),
+        p_image_hex => json_value(l_body, '$.image_hex' RETURNING CLOB),
+        p_mime_type => json_value(l_body, '$.mime_type'),
+        p_out       => l_out
+    );
+    htp.p(l_out);
+END;]');
+
+  ---------------------------------------------------------------------------
   -- DOCUMENTOS (lectura)
   ---------------------------------------------------------------------------
   ords.define_template(p_module_name => 'esign', p_pattern => 'documents');
@@ -436,6 +493,23 @@ BEGIN
         p_out       => l_out
     );
     htp.prn(l_out);
+END;]');
+
+  ords.define_template(p_module_name => 'esign', p_pattern => 'documents/:cdc/kude');
+  ords.define_handler(
+    p_module_name => 'esign', p_pattern => 'documents/:cdc/kude', p_method => 'GET',
+    p_source_type => ords.source_type_plsql,
+    p_source => q'[
+DECLARE
+    l_out  CLOB;
+    l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION');
+BEGIN
+    pkg_esign_kude_api.pr_get_kude(
+        p_client_id => pkg_esign_util.fn_get_client_id_from_jwt(l_auth),
+        p_cdc       => :cdc,
+        p_out       => l_out
+    );
+    htp.p(l_out);
 END;]');
 
   ords.define_template(p_module_name => 'esign', p_pattern => 'documents/:cdc/retry');

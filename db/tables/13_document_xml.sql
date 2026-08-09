@@ -5,7 +5,8 @@ CREATE TABLE document_xml (
   client_id   NUMBER NOT NULL,                         -- desnormalizado para la VPD
   xml_firmado CLOB,
   qr_url      VARCHAR2(1000),
-  kude_blob   BLOB,
+  kude_blob   BLOB,                                   -- sin uso (ver kude_url); reservado
+  kude_url    VARCHAR2(1000),                         -- URL publica del KuDE en bucket-etick-dev
   CONSTRAINT fk_document_xml_doc    FOREIGN KEY (document_id) REFERENCES document (id_document) ON DELETE CASCADE,
   CONSTRAINT fk_document_xml_client FOREIGN KEY (client_id)   REFERENCES client (id_client) ON DELETE CASCADE
 );
