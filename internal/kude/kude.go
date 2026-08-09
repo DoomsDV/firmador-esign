@@ -85,6 +85,9 @@ type KudeTimbrado struct {
 type KudeReceptor struct {
 	Nombre         string
 	Identificacion string
+	Direccion      string // "" si el DE no la informa (dDirRec es omitempty)
+	Telefono       string
+	Email          string
 }
 
 type KudeItem struct {
@@ -223,6 +226,9 @@ func BuildKudeData(rde *sifen.RDE, qrURL string, ambiente string, b Branding) (K
 		Receptor: KudeReceptor{
 			Nombre:         rec.DNomRec,
 			Identificacion: id,
+			Direccion:      recDireccion(rec),
+			Telefono:       rec.DTelRec,
+			Email:          rec.DEmailRec,
 		},
 		Items:    items,
 		Totales:  totales,
@@ -258,6 +264,14 @@ func emisDireccion(e sifen.GEmis) string {
 		dir += " " + e.DNumCas
 	}
 	return dir
+}
+
+func recDireccion(r sifen.GDatRec) string {
+	dir := r.DDirRec
+	if r.DNumCasRec != "" && r.DNumCasRec != "0" {
+		dir += " " + r.DNumCasRec
+	}
+	return strings.TrimSpace(dir)
 }
 
 func emisActividad(e sifen.GEmis) string {

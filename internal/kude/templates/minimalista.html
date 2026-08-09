@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>KuDE {{ .CDC }}</title>
 <style>
-  @page { size: A4; margin: 12mm; }
+  @page { size: A4; margin: 16mm; }
   * { box-sizing: border-box; }
   body {
     margin: 0;
@@ -21,113 +21,111 @@
     font-size: 9px;
     letter-spacing: .03em;
     padding: 4px 0;
-    margin-bottom: 10px;
+    margin-bottom: 16px;
     border-radius: 3px;
   }
-  .header {
+
+  /* Encabezado: logo/emisor a la izquierda, datos legales a la derecha (sin cajas) */
+  .header { display: flex; justify-content: space-between; align-items: flex-start; }
+  .header .logo { max-height: 34px; max-width: 130px; object-fit: contain; margin-bottom: 6px; display: block; }
+  .header .marca { font-size: 13px; font-weight: 700; color: #0f172a; }
+  .header .datos-emisor { text-align: right; }
+  .header .datos-emisor p { margin: 1px 0; font-size: 8.5px; color: #94a3b8; }
+  .header .datos-emisor .nombre { font-size: 9.5px; color: #475569; font-weight: 600; margin-bottom: 1px; }
+
+  .titulo-doc { margin-top: 26px; }
+  .titulo-doc h1 { margin: 0; font-size: 25px; font-weight: 800; color: #0f172a; letter-spacing: -.01em; }
+  .titulo-doc .numdoc { margin-top: 3px; font-size: 12.5px; color: #64748b; letter-spacing: .02em; }
+
+  .detalles { display: flex; gap: 36px; margin-top: 26px; margin-bottom: 22px; }
+  .detalles .col { flex: 1; min-width: 0; }
+  .detalles .label { font-size: 8px; text-transform: uppercase; letter-spacing: .06em; color: #94a3b8; margin-bottom: 6px; }
+  .detalles .cliente .nombre { font-size: 11px; font-weight: 700; color: #0f172a; margin-bottom: 2px; }
+  .detalles .cliente p { margin: 1px 0; font-size: 9.5px; color: #64748b; }
+  .detalles .fila {
     display: flex;
     justify-content: space-between;
-    align-items: flex-start;
-    border-bottom: 2px solid {{ .ColorPrimario }};
-    padding-bottom: 10px;
-    margin-bottom: 12px;
+    gap: 10px;
+    padding: 5px 0;
+    border-bottom: 1px solid #f1f5f9;
+    font-size: 9.5px;
   }
-  .header .emisor { max-width: 60%; }
-  .header .logo { max-height: 56px; max-width: 160px; object-fit: contain; margin-bottom: 6px; }
-  .header .emisor h1 { font-size: 15px; margin: 0 0 2px; color: {{ .ColorPrimario }}; }
-  .header .emisor .fantasia { font-size: 10px; color: #64748b; margin-bottom: 4px; }
-  .header .emisor p { margin: 1px 0; font-size: 9px; color: #475569; }
+  .detalles .fila .k { color: #94a3b8; }
+  .detalles .fila .v { color: #1e293b; font-weight: 600; text-align: right; }
 
-  .timbrado {
-    border: 1px solid {{ .ColorPrimario }};
-    border-radius: 6px;
-    padding: 8px 10px;
-    min-width: 220px;
-    text-align: right;
-  }
-  .timbrado .tipo { font-size: 12px; font-weight: 700; color: {{ .ColorPrimario }}; margin-bottom: 4px; }
-  .timbrado .numdoc { font-size: 14px; font-weight: 700; letter-spacing: .04em; margin-bottom: 4px; }
-  .timbrado p { margin: 1px 0; font-size: 9px; color: #475569; }
-
-  .receptor {
-    border: 1px solid #e2e8f0;
-    border-radius: 6px;
-    padding: 8px 10px;
-    margin-bottom: 10px;
-  }
-  .receptor .label { font-size: 8px; text-transform: uppercase; letter-spacing: .05em; color: #94a3b8; margin-bottom: 3px; }
-  .receptor .fila { display: flex; gap: 18px; flex-wrap: wrap; }
-  .receptor .fila div { font-size: 9.5px; }
-  .receptor .fila b { color: #334155; }
-
-  table.items { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+  table.items { width: 100%; border-collapse: collapse; margin-bottom: 4px; }
   table.items thead th {
-    background: {{ .ColorPrimario }};
-    color: #fff;
-    font-size: 8.5px;
+    border-bottom: 2px solid {{ .ColorPrimario }};
+    color: #94a3b8;
+    font-size: 8px;
     text-transform: uppercase;
-    letter-spacing: .03em;
-    padding: 6px 6px;
+    letter-spacing: .05em;
+    font-weight: 700;
+    padding: 0 6px 7px;
     text-align: left;
   }
   table.items thead th.num { text-align: right; }
-  table.items tbody td { padding: 5px 6px; border-bottom: 1px solid #f1f5f9; font-size: 9.5px; }
+  table.items tbody td { padding: 8px 6px; border-bottom: 1px solid #f1f5f9; font-size: 9.5px; }
   table.items tbody td.num { text-align: right; white-space: nowrap; }
-  table.items tbody tr:nth-child(even) { background: #f8fafc; }
 
-  .resumen {
-    display: flex;
-    justify-content: flex-end;
-    margin-bottom: 12px;
-  }
-  .resumen table { border-collapse: collapse; min-width: 260px; }
-  .resumen td { padding: 3px 8px; font-size: 9.5px; }
-  .resumen td.k { color: #64748b; text-align: right; }
-  .resumen td.v { text-align: right; font-weight: 600; white-space: nowrap; }
-  .resumen tr.total td { border-top: 2px solid {{ .ColorPrimario }}; font-size: 12px; padding-top: 6px; }
+  .resumen { display: flex; justify-content: flex-end; margin-top: 8px; margin-bottom: 24px; }
+  .resumen table { border-collapse: collapse; min-width: 240px; }
+  .resumen td { padding: 3px 0 3px 16px; font-size: 9.5px; }
+  .resumen td.k { color: #94a3b8; text-align: right; }
+  .resumen td.v { text-align: right; font-weight: 600; white-space: nowrap; color: #334155; }
+  .resumen tr.total td { border-top: 2px solid {{ .ColorPrimario }}; padding-top: 9px; font-size: 15px; font-weight: 800; }
+  .resumen tr.total td.k { color: #0f172a; }
   .resumen tr.total td.v { color: {{ .ColorPrimario }}; }
 
   .footer {
     display: flex;
     justify-content: space-between;
-    align-items: flex-end;
-    border-top: 1px solid #e2e8f0;
-    padding-top: 10px;
+    align-items: flex-start;
+    border-top: 1px solid #f1f5f9;
+    padding-top: 14px;
   }
-  .footer .qr img { width: 90px; height: 90px; }
-  .footer .cdc { font-size: 8px; color: #94a3b8; margin-top: 4px; word-break: break-all; max-width: 260px; }
-  .footer .notas { font-size: 8.5px; color: #64748b; max-width: 320px; text-align: right; }
-  .footer .kude-title { font-size: 9px; font-weight: 700; color: {{ .ColorPrimario }}; text-align: right; margin-bottom: 3px; }
+  .footer .qr img { width: 74px; height: 74px; }
+  .footer .cdc { font-size: 7.5px; color: #cbd5e1; margin-top: 5px; letter-spacing: .03em; }
+  .footer .notas { font-size: 9px; color: #64748b; max-width: 300px; text-align: right; }
+  .footer .legal { font-size: 7.5px; color: #cbd5e1; text-align: right; max-width: 300px; margin-top: 6px; line-height: 1.35; }
 </style>
 </head>
 <body>
   {{ if .MostrarLeyendaPrueba }}<div class="leyenda-prueba">{{ .LeyendaPrueba }}</div>{{ end }}
 
   <div class="header">
-    <div class="emisor">
-      {{ if .LogoURL }}<img class="logo" src="{{ .LogoURL }}" alt="logo">{{ end }}
-      <h1>{{ .Emisor.Nombre }}</h1>
-      {{ if .Emisor.Fantasia }}<div class="fantasia">{{ .Emisor.Fantasia }}</div>{{ end }}
-      <p>RUC: {{ .Emisor.RUC }}</p>
-      <p>{{ .Emisor.Direccion }}</p>
-      {{ if .Emisor.Actividad }}<p>{{ .Emisor.Actividad }}</p>{{ end }}
-      {{ if .Emisor.Telefono }}<p>Tel: {{ .Emisor.Telefono }}{{ if .Emisor.Email }} · {{ .Emisor.Email }}{{ end }}</p>{{ end }}
+    <div>
+      {{ if .LogoURL }}<img class="logo" src="{{ .LogoURL }}" alt="logo">{{ else }}<div class="marca">{{ .Emisor.Nombre }}</div>{{ end }}
     </div>
-    <div class="timbrado">
-      <div class="tipo">{{ .Timbrado.TipoDocDesc }}</div>
-      <div class="numdoc">{{ .Timbrado.Establecimiento }}-{{ .Timbrado.PuntoExp }}-{{ .Timbrado.NumeroDoc }}</div>
-      <p>Timbrado N°: {{ .Timbrado.NumTimbrado }}</p>
-      <p>Inicio vigencia: {{ .Timbrado.FeIniT }}</p>
-      <p>Fecha emisión: {{ .FechaEmision }}</p>
-      <p>Condición: {{ .Condicion }}</p>
+    <div class="datos-emisor">
+      {{ if .LogoURL }}<div class="nombre">{{ .Emisor.Nombre }}</div>{{ end }}
+      {{ if .Emisor.Fantasia }}<p>{{ .Emisor.Fantasia }}</p>{{ end }}
+      <p>RUC {{ .Emisor.RUC }}</p>
+      <p>{{ .Emisor.Direccion }}</p>
+      {{ if .Emisor.Telefono }}<p>{{ .Emisor.Telefono }}{{ if .Emisor.Email }} · {{ .Emisor.Email }}{{ end }}</p>{{ end }}
     </div>
   </div>
 
-  <div class="receptor">
-    <div class="label">Receptor</div>
-    <div class="fila">
-      <div><b>Nombre:</b> {{ .Receptor.Nombre }}</div>
-      <div><b>Identificación:</b> {{ .Receptor.Identificacion }}</div>
+  <div class="titulo-doc">
+    <h1>{{ .Timbrado.TipoDocDesc }}</h1>
+    <div class="numdoc">N° {{ .Timbrado.Establecimiento }}-{{ .Timbrado.PuntoExp }}-{{ .Timbrado.NumeroDoc }}</div>
+  </div>
+
+  <div class="detalles">
+    <div class="col cliente">
+      <div class="label">Facturar a</div>
+      <div class="nombre">{{ .Receptor.Nombre }}</div>
+      <p>{{ .Receptor.Identificacion }}</p>
+      {{ if .Receptor.Direccion }}<p>{{ .Receptor.Direccion }}</p>{{ end }}
+      {{ if .Receptor.Telefono }}<p>{{ .Receptor.Telefono }}</p>{{ end }}
+      {{ if .Receptor.Email }}<p>{{ .Receptor.Email }}</p>{{ end }}
+    </div>
+    <div class="col">
+      <div class="label">Detalles</div>
+      <div class="fila"><span class="k">Timbrado N°</span><span class="v">{{ .Timbrado.NumTimbrado }}</span></div>
+      <div class="fila"><span class="k">Vigente desde</span><span class="v">{{ .Timbrado.FeIniT }}</span></div>
+      <div class="fila"><span class="k">Fecha de emisión</span><span class="v">{{ .FechaEmision }}</span></div>
+      <div class="fila"><span class="k">Condición</span><span class="v">{{ .Condicion }}</span></div>
     </div>
   </div>
 
@@ -159,11 +157,11 @@
   {{ if .Totales }}
   <div class="resumen">
     <table>
-      <tr><td class="k">Subtotal exento</td><td class="v">{{ .Totales.SubExe }}</td></tr>
-      <tr><td class="k">Subtotal exonerado</td><td class="v">{{ .Totales.SubExo }}</td></tr>
+      <tr><td class="k">Subtotal exenta</td><td class="v">{{ .Totales.SubExe }}</td></tr>
+      <tr><td class="k">Subtotal exonerada</td><td class="v">{{ .Totales.SubExo }}</td></tr>
       <tr><td class="k">Subtotal IVA 5%</td><td class="v">{{ .Totales.Sub5 }}</td></tr>
       <tr><td class="k">Subtotal IVA 10%</td><td class="v">{{ .Totales.Sub10 }}</td></tr>
-      <tr><td class="k">Total IVA (5% + 10%)</td><td class="v">{{ .Totales.TotIVA }}</td></tr>
+      <tr><td class="k">Total IVA</td><td class="v">{{ .Totales.TotIVA }}</td></tr>
       <tr class="total"><td class="k">Total {{ .Totales.Moneda }}</td><td class="v">{{ .Totales.TotGralOpe }}</td></tr>
       {{ if .Totales.TotalGs }}<tr><td class="k">Total Gs.</td><td class="v">{{ .Totales.TotalGs }}</td></tr>{{ end }}
     </table>
@@ -176,8 +174,8 @@
       <div class="cdc">CDC: {{ .CDC }}</div>
     </div>
     <div class="notas">
-      <div class="kude-title">KuDE — Comprobante Único de DE</div>
       {{ if .NotasFooter }}{{ .NotasFooter }}{{ end }}
+      <div class="legal">Este documento es una representación gráfica de un Documento Electrónico (KuDE). Consulte su validez con el CDC en el portal de consultas del SIFEN.</div>
     </div>
   </div>
 </body>
