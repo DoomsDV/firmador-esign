@@ -53,7 +53,7 @@ func (s *Server) handlePanelCertificate(w http.ResponseWriter, r *http.Request) 
 
 	digital, err := sifen.LoadCertificateFromBytes(p12, req.Password)
 	if err != nil {
-		writeErr(w, http.StatusUnprocessableEntity, "INVALID_P12", "no se pudo abrir el p12: "+err.Error())
+		writeErr(w, http.StatusUnprocessableEntity, "INVALID_P12", err.Error())
 		return
 	}
 
