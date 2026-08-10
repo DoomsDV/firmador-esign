@@ -40,18 +40,13 @@ func ValidateP12DER(p12Data []byte) error {
 
 // LoadCertificateFromBytes extrae clave RSA + certificado de un PKCS#12 ya en
 // memoria (usado en multi-tenant: el .p12 llega descifrado, nunca desde disco).
+// Si el export DNIT no es legible por go-pkcs12, normaliza vía OpenSSL.
 func LoadCertificateFromBytes(p12Data []byte, password string) (*DigitalCertificate, error) {
-	if len(p12Data) == 0 {
-		return nil, fmt.Errorf("p12 vacío")
-	}
-	if err := ValidateP12DER(p12Data); err != nil {
+	res, err := OpenPKCS12(p12Data, password)
+	if err != nil {
 		return nil, err
 	}
-	digital, err := decodePKCS12(p12Data, password)
-	if err != nil {
-		return nil, formatP12LoadError(err)
-	}
-	return digital, nil
+	return res.Cert, nil
 }
 
 func decodePKCS12(p12Data []byte, password string) (*DigitalCertificate, error) {
@@ -171,7 +166,7 @@ func formatP12LoadError(err error) error {
 	if strings.Contains(msg, "empty encrypted data") ||
 		strings.Contains(msg, "private key missing") ||
 		strings.Contains(msg, "certificate missing") {
-		return fmt.Errorf("el .p12 no contiene una clave privada de firma válida; verificá que sea el certificado de firma electrónica (no solo identidad) exportado como PKCS#12 con clave privada")
+		return fmt.Errorf("no se pudo abrir el .p12 con el decodificador estándar; verificá la contraseña o que el archivo incluya clave privada de firma")
 	}
 	return fmt.Errorf("error decodificando p12 (revisar contraseña/formato): %w", err)
 }

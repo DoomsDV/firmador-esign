@@ -71,12 +71,12 @@ func TestFormatP12LoadError(t *testing.T) {
 		{
 			name:       "empty encrypted data",
 			err:        errors.New("pkcs12: empty encrypted data"),
-			wantSubstr: "clave privada de firma válida",
+			wantSubstr: "decodificador estándar",
 		},
 		{
 			name:       "private key missing",
 			err:        errors.New("pkcs12: private key missing"),
-			wantSubstr: "clave privada de firma válida",
+			wantSubstr: "decodificador estándar",
 		},
 		{
 			name:       "non rsa",
