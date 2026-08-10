@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/DoomsDV/firmador-e/internal/gotenberg"
@@ -72,7 +73,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/events/inutilizacion", s.withLogging(s.authMiddleware(s.handleInutilizacion)))
 	mux.HandleFunc("POST /v1/panel/certificate", s.withLogging(s.panelJWTMiddleware(true, s.handlePanelCertificate)))
 	mux.HandleFunc("PUT /v1/panel/environments", s.withLogging(s.panelJWTMiddleware(true, s.handlePanelEnvironments)))
-	return mux
+	return corsMiddleware(parseCORSOrigins(os.Getenv("ESIGN_CORS_ORIGINS")))(mux)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
