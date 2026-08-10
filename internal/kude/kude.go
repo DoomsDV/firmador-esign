@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"html/template"
 	"strings"
+	"time"
 
 	"github.com/shopspring/decimal"
 	qrcode "github.com/skip2/go-qrcode"
@@ -20,6 +21,9 @@ import (
 
 // leyendaPrueba es la advertencia obligatoria en ambiente de homologación.
 const leyendaPrueba = "DOCUMENTO GENERADO EN AMBIENTE DE PRUEBA - SIN VALOR COMERCIAL NI FISCAL"
+
+// leyendaLegalKuDE es la leyenda normativa del pie (Manual Tecnico / preview del panel).
+const leyendaLegalKuDE = "ESTE DOCUMENTO ES UNA REPRESENTACIÓN GRÁFICA DE UN DOCUMENTO ELECTRÓNICO (XML)"
 
 const (
 	TemplateMinimalista = "minimalista"
@@ -52,6 +56,9 @@ type KudeData struct {
 	CDC          string // formateado en grupos de 4
 	FechaEmision string
 	Condicion    string
+	Moneda       string
+	MonedaDesc   string
+	TipoCambio   string // "" si moneda PYG o no informado
 
 	Emisor   KudeEmisor
 	Timbrado KudeTimbrado
@@ -61,6 +68,8 @@ type KudeData struct {
 
 	QRURL    string
 	QRBase64 string // imagen PNG del QR, en base64 (sin el prefijo data:)
+	URLConsulta string // URL del portal e-Kuatia (sin query del QR)
+	LeyendaLegal string
 }
 
 type KudeEmisor struct {
@@ -68,6 +77,7 @@ type KudeEmisor struct {
 	Fantasia   string
 	RUC        string
 	Direccion  string
+	Ciudad     string // ciudad emisor (minimalista: pie de membrete derecho)
 	Telefono   string
 	Email      string
 	Actividad  string
@@ -96,6 +106,7 @@ type KudeItem struct {
 	Cantidad       string
 	PrecioUnitario string
 	TasaIVA        string
+	IVAHint        string // texto inline en descripción: "IVA 10%", "Exento", etc.
 	Total          string
 }
 
@@ -130,8 +141,19 @@ func BuildKudeData(rde *sifen.RDE, qrURL string, ambiente string, b Branding) (K
 	rec := de.GDatGralOpe.GDatRec
 	tot := de.GTotSub
 	moneda := "PYG"
-	if de.GDatGralOpe.GOpeCom != nil && de.GDatGralOpe.GOpeCom.CMoneOpe != "" {
-		moneda = de.GDatGralOpe.GOpeCom.CMoneOpe
+	monedaDesc := "Guarani"
+	var tipoCambio string
+	if de.GDatGralOpe.GOpeCom != nil {
+		oc := de.GDatGralOpe.GOpeCom
+		if oc.CMoneOpe != "" {
+			moneda = oc.CMoneOpe
+		}
+		if oc.DDesMoneOpe != "" {
+			monedaDesc = oc.DDesMoneOpe
+		}
+		if oc.DTiCam != nil && !strings.EqualFold(moneda, "PYG") {
+			tipoCambio = oc.DTiCam.StringFixed(2)
+		}
 	}
 
 	qrPNG, err := qrcode.Encode(qrURL, qrcode.Medium, 256)
@@ -148,19 +170,29 @@ func BuildKudeData(rde *sifen.RDE, qrURL string, ambiente string, b Branding) (K
 		color = "#0f172a"
 	}
 
-	condicion := "Contado"
+	condicion := ""
 	if de.GDtipDE.GCamCond != nil {
 		condicion = de.GDtipDE.GCamCond.DDCondOpe
 	}
 
 	items := make([]KudeItem, 0, len(de.GDtipDE.GCamItem))
 	for _, it := range de.GDtipDE.GCamItem {
-		var pUni, tasa string
+		var pUni, tasa, ivaHint string
 		if it.GValorItem != nil {
 			pUni = fmtMonto(it.GValorItem.DPUniProSer, moneda)
 		}
 		if it.GCamIVA != nil {
 			tasa = it.GCamIVA.DTasaIVA.String()
+			switch it.GCamIVA.IAfecIVA {
+			case 1, 4:
+				if it.GCamIVA.DTasaIVA.IsPositive() {
+					ivaHint = "IVA " + tasa + "%"
+				}
+			case 2:
+				ivaHint = "Exonerado"
+			case 3:
+				ivaHint = "Exento"
+			}
 		}
 		items = append(items, KudeItem{
 			Codigo:         it.DCodInt,
@@ -168,6 +200,7 @@ func BuildKudeData(rde *sifen.RDE, qrURL string, ambiente string, b Branding) (K
 			Cantidad:       it.DCantProSer.String(),
 			PrecioUnitario: pUni,
 			TasaIVA:        tasa,
+			IVAHint:        ivaHint,
 			Total:          fmtMonto(effectiveTotOpe(it), moneda),
 		})
 	}
@@ -191,9 +224,11 @@ func BuildKudeData(rde *sifen.RDE, qrURL string, ambiente string, b Branding) (K
 		}
 	}
 
-	id := "RUC " + rec.DRucRec
-	if rec.DRucRec == "" {
-		id = rec.DDTipIDRec + " " + rec.DNumIDRec
+	id := ""
+	if rec.DRucRec != "" {
+		id = fmt.Sprintf("RUC %s-%d", rec.DRucRec, rec.DDVRec)
+	} else if rec.DNumIDRec != "" {
+		id = strings.TrimSpace(rec.DDTipIDRec + " " + rec.DNumIDRec)
 	}
 
 	data := KudeData{
@@ -204,20 +239,24 @@ func BuildKudeData(rde *sifen.RDE, qrURL string, ambiente string, b Branding) (K
 		MostrarLeyendaPrueba: !strings.EqualFold(strings.TrimSpace(ambiente), "prod"),
 		LeyendaPrueba:        leyendaPrueba,
 		CDC:                  formatCDC(de.Id),
-		FechaEmision:         de.GDatGralOpe.DFeEmiDE,
+		FechaEmision:         fmtFechaHoraDE(de.GDatGralOpe.DFeEmiDE),
 		Condicion:            condicion,
+		Moneda:               moneda,
+		MonedaDesc:           monedaDesc,
+		TipoCambio:           tipoCambio,
 		Emisor: KudeEmisor{
 			Nombre:    emis.DNomEmi,
 			Fantasia:  emis.DNomFanEmi,
 			RUC:       fmt.Sprintf("%s-%d", emis.DRucEm, emis.DDVEmi),
 			Direccion: emisDireccion(emis),
+			Ciudad:    emisCiudad(emis),
 			Telefono:  emis.DTelEmi,
 			Email:     emis.DEmailE,
 			Actividad: emisActividad(emis),
 		},
 		Timbrado: KudeTimbrado{
 			NumTimbrado:     timb.DNumTim,
-			FeIniT:          timb.DFeIniT,
+			FeIniT:          fmtFechaDE(timb.DFeIniT),
 			TipoDocDesc:     timb.DDesTiDE,
 			Establecimiento: timb.DEst,
 			PuntoExp:        timb.DPunExp,
@@ -234,6 +273,8 @@ func BuildKudeData(rde *sifen.RDE, qrURL string, ambiente string, b Branding) (K
 		Totales:  totales,
 		QRURL:    qrURL,
 		QRBase64: base64.StdEncoding.EncodeToString(qrPNG),
+		URLConsulta: urlConsultaDisplay(qrURL),
+		LeyendaLegal: leyendaLegalKuDE,
 	}
 	return data, nil
 }
@@ -264,6 +305,60 @@ func emisDireccion(e sifen.GEmis) string {
 		dir += " " + e.DNumCas
 	}
 	return dir
+}
+
+func emisCiudad(e sifen.GEmis) string {
+	parts := make([]string, 0, 2)
+	if e.DDesCiuEmi != "" {
+		parts = append(parts, e.DDesCiuEmi)
+	}
+	if e.DDesDepEmi != "" && !strings.EqualFold(e.DDesDepEmi, e.DDesCiuEmi) {
+		parts = append(parts, e.DDesDepEmi)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func urlConsultaDisplay(qrURL string) string {
+	u := strings.TrimSpace(qrURL)
+	if i := strings.Index(u, "?"); i > 0 {
+		u = u[:i]
+	}
+	if strings.HasSuffix(strings.ToLower(u), "/qr") {
+		u = u[:len(u)-3] + "/"
+	}
+	return u
+}
+
+func fmtFechaDE(iso string) string {
+	iso = strings.TrimSpace(iso)
+	if iso == "" {
+		return iso
+	}
+	if t, err := time.Parse("2006-01-02", iso); err == nil {
+		return t.Format("02/01/2006")
+	}
+	return iso
+}
+
+func fmtFechaHoraDE(iso string) string {
+	iso = strings.TrimSpace(iso)
+	if iso == "" {
+		return iso
+	}
+	layouts := []string{
+		"2006-01-02T15:04:05",
+		time.RFC3339,
+		"2006-01-02",
+	}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, iso); err == nil {
+			if layout == "2006-01-02" {
+				return t.Format("02/01/2006")
+			}
+			return t.Format("02/01/2006 15:04:05")
+		}
+	}
+	return iso
 }
 
 func recDireccion(r sifen.GDatRec) string {

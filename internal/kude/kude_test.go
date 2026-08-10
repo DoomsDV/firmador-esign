@@ -73,6 +73,15 @@ func TestBuildAndRenderKuDE(t *testing.T) {
 		if data.MostrarLeyendaPrueba && !strings.Contains(html, data.LeyendaPrueba) {
 			t.Fatalf("HTML de %s no muestra la leyenda de ambiente de prueba", tmpl)
 		}
+		if !strings.Contains(html, data.LeyendaLegal) {
+			t.Fatalf("HTML de %s no contiene la leyenda legal (XML)", tmpl)
+		}
+		if !strings.Contains(html, data.URLConsulta) {
+			t.Fatalf("HTML de %s no contiene la URL de consulta", tmpl)
+		}
+		if strings.Contains(html, "Código</th>") {
+			t.Fatalf("HTML de %s aún muestra columna Código (debe coincidir con preview)", tmpl)
+		}
 	}
 }
 
