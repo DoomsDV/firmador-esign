@@ -1,0 +1,616 @@
+openapi: 3.0.3
+info:
+  title: esign — API del Panel
+  version: "1.0.0"
+  description: |
+    Contrato del **panel web esign** (frontend React).
+
+    Dos bases URL:
+    - **ORDS** (`{ORDS}/api/v1`): auth, cliente, establecimientos, API keys, documentos (consulta), kude-config. Bearer JWT.
+    - **Go mediación** (`{GO}/v1/panel`): subida de certificado y CSC en claro (Go cifra). Bearer JWT, solo `owner`.
+
+    Todas las respuestas usan el envelope `{ success, data, error, meta }`.
+
+servers:
+  - url: https://g9549f707e8ebfa-aoxdev.adb.sa-saopaulo-1.oraclecloudapps.com/ords/esign
+    description: Panel ORDS (/api/v1)
+  - url: http://localhost:8080
+    description: Go mediación (/v1/panel)
+
+tags:
+  - name: Panel - Auth
+    description: Registro, login, selección de negocio, invitaciones. Bearer JWT.
+  - name: Panel - Cliente
+    description: Identidad del negocio, emisor, establecimientos, ambientes.
+  - name: Panel - API keys
+    description: Gestión de API keys (rotables).
+  - name: Panel - Certificado
+    description: Subida/metadata del certificado .p12.
+  - name: Panel - Documentos
+    description: Consulta de documentos emitidos.
+  - name: Panel - KuDE
+    description: Branding del comprobante PDF (plantilla, color, logo, footer).
+
+security:
+  - bearerJWT: []
+
+paths:
+  /v1/panel/certificate:
+    post:
+      tags: [Panel - Certificado]
+      summary: Subir .p12 + password en claro (Go cifra y guarda)
+      description: |
+        El navegador envía el P12 (base64) y la password en claro. Go cifra con AES-256-GCM
+        (`ESIGN_MASTER_KEY`) y guarda vía ORDS interno.
+        El panel NUNCA cifra ni ve la master key.
+      servers: [{ url: http://localhost:8080 }]
+      security: [{ bearerJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PanelCertificateUploadRequest" }
+      responses:
+        "200":
+          description: Certificado almacenado (cifrado)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /v1/panel/environments:
+    put:
+      tags: [Panel - Cliente]
+      summary: Upsert timbrado + CSC en claro (Go cifra el CSC y guarda)
+      description: |
+        El navegador envía timbrado/CSC en claro. Go cifra el CSC y persiste vía ORDS interno.
+        Scopeado por ambiente TEST/PROD.
+      servers: [{ url: http://localhost:8080 }]
+      security: [{ bearerJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PanelEnvironmentUpsertRequest" }
+      responses:
+        "200":
+          description: Ambiente actualizado
+          content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /api/v1/auth/register:
+    post:
+      tags: [Panel - Auth]
+      summary: Registrar usuario + negocio (membresía owner)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegisterRequest" }
+      responses:
+        "200":
+          description: Registrado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Envelope" }
+
+  /api/v1/auth/login:
+    post:
+      tags: [Panel - Auth]
+      summary: Login (devuelve la lista de negocios para elegir)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+      responses:
+        "200":
+          description: Usuario + lista de clients
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Envelope" }
+
+  /api/v1/auth/select-client:
+    post:
+      tags: [Panel - Auth]
+      summary: Elegir negocio y emitir el JWT
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, client_id]
+              properties:
+                user_id: { type: integer }
+                client_id: { type: integer }
+      responses:
+        "200":
+          description: Tokens de acceso
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Envelope" }
+
+  /api/v1/invitations:
+    post:
+      tags: [Panel - Auth]
+      summary: Crear invitación (base para envío por correo)
+      description: Crea una invitación PENDING con token + expiración. El envío del correo y la aceptación quedan pendientes.
+      security: [{ bearerJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, role]
+              properties:
+                email: { type: string, format: email }
+                role: { type: string, enum: [owner, developer, analyst] }
+      responses:
+        "200":
+          description: Invitación creada (INVITE_PENDING + token)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Envelope" }
+
+  /api/v1/client:
+    get:
+      tags: [Panel - Cliente]
+      summary: Identidad del negocio + emisor
+      security: [{ bearerJWT: [] }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+    put:
+      tags: [Panel - Cliente]
+      summary: Upsert del emisor (solo owner)
+      security: [{ bearerJWT: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+
+  /api/v1/establecimientos:
+    get:
+      tags: [Panel - Cliente]
+      summary: Lista de sucursales con geo
+      security: [{ bearerJWT: [] }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+    post:
+      tags: [Panel - Cliente]
+      summary: Alta/actualización de sucursal (solo owner)
+      security: [{ bearerJWT: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/EstablecimientoRequest" } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+
+  /api/v1/establecimientos/{codigo}/puntos:
+    post:
+      tags: [Panel - Cliente]
+      summary: Alta/actualización de punto de expedición (solo owner)
+      security: [{ bearerJWT: [] }]
+      parameters:
+        - name: codigo
+          in: path
+          required: true
+          description: Código del establecimiento (ej. 001)
+          schema: { type: string, example: "001" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PuntoExpedicionRequest" }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/environments:
+    put:
+      tags: [Panel - Cliente]
+      summary: Upsert timbrado + CSC cifrado por ambiente (solo owner)
+      description: |
+        Recibe el CSC YA cifrado (hex). El panel no debe llamar este endpoint con el CSC en claro:
+        usar `PUT /v1/panel/environments` en Go (mediación de cifrado).
+      security: [{ bearerJWT: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/EnvironmentRequest" } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+
+  /api/v1/environments/{env}:
+    get:
+      tags: [Panel - Cliente]
+      summary: Metadata de timbrado/CSC del ambiente (solo owner, nunca el CSC)
+      description: |
+        Devuelve `num_timbrado`, `fecha_inicio_vigencia`, `id_csc`, `key_version` y `has_csc`
+        para precargar el panel. `data` es `null` si el ambiente todavía no fue configurado.
+        El CSC (ni cifrado) nunca se expone por este endpoint.
+      security: [{ bearerJWT: [] }]
+      parameters:
+        - name: env
+          in: path
+          required: true
+          schema: { type: string, enum: [test, prod] }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: "#/components/schemas/Envelope" }
+                  - type: object
+                    properties:
+                      data: { $ref: "#/components/schemas/EnvironmentMeta" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/api-keys:
+    get:
+      tags: [Panel - API keys]
+      summary: Lista de API keys (prefijo/ambiente/estado; nunca la key completa)
+      security: [{ bearerJWT: [] }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+
+  /api/v1/api-keys/{env}/rotate:
+    post:
+      tags: [Panel - API keys]
+      summary: Rotar la API key de un ambiente (muestra la key UNA sola vez)
+      security: [{ bearerJWT: [] }]
+      parameters:
+        - name: env
+          in: path
+          required: true
+          schema: { type: string, enum: [test, prod] }
+      responses:
+        "200":
+          description: Key nueva (única vez que se ve completa)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } }
+
+  /api/v1/certificate:
+    get:
+      tags: [Panel - Certificado]
+      summary: Metadata del certificado ACTIVE (nunca el BLOB)
+      security: [{ bearerJWT: [] }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Panel - Certificado]
+      summary: Subir P12 cifrado + password cifrado (solo owner)
+      description: |
+        Recibe ciphertext+nonce YA cifrados. El panel no debe llamar este endpoint con el
+        P12 en claro: usar `POST /v1/panel/certificate` en Go (mediación de cifrado).
+      security: [{ bearerJWT: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/CertificateRequest" } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/kude-config:
+    get:
+      tags: [Panel - KuDE]
+      summary: Configuración de branding del KuDE (PDF)
+      security: [{ bearerJWT: [] }]
+      responses:
+        "200":
+          description: Plantilla, color, logo URL, footer, mostrar_fantasia
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: "#/components/schemas/Envelope" }
+                  - type: object
+                    properties:
+                      data: { $ref: "#/components/schemas/KudeConfig" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    put:
+      tags: [Panel - KuDE]
+      summary: Upsert de branding KuDE (sin logo; solo owner)
+      security: [{ bearerJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/KudeConfigUpsertRequest" }
+      responses:
+        "200":
+          description: Configuración actualizada
+          content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/kude-config/logo:
+    post:
+      tags: [Panel - KuDE]
+      summary: Subir logo al bucket OCI (solo owner)
+      security: [{ bearerJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/KudeLogoUploadRequest" }
+      responses:
+        "200":
+          description: Logo almacenado; respuesta incluye logo_url actualizado
+          content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/documents/search:
+    post:
+      tags: [Panel - Documentos]
+      summary: Listado paginado de documentos (filtros en el body)
+      description: |
+        Endpoint de listado recomendado. Los filtros van en el body porque esta instancia
+        ORDS no liga query-params de forma fiable (ORDS-25001). `estado`/`tipo` en null no filtran.
+      security: [{ bearerJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [environment]
+              properties:
+                environment: { type: string, enum: [TEST, PROD] }
+                estado: { type: string, nullable: true, enum: [BORRADOR, FIRMADO, ENVIADO, APROBADO, RECHAZADO, CANCELADO] }
+                tipo: { type: integer, nullable: true }
+                page: { type: integer, default: 1 }
+                pageSize: { type: integer, default: 20 }
+      responses:
+        "200":
+          description: Listado con meta de paginacion (page/pageSize/total)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/documents:
+    get:
+      tags: [Panel - Documentos]
+      summary: "[DEPRECADO] Listado por query-params"
+      deprecated: true
+      description: |
+        No usar: los query-params no ligan de forma fiable en esta instancia ORDS (ORDS-25001).
+        Usar POST /api/v1/documents/search con los filtros en el body.
+      security: [{ bearerJWT: [] }]
+      parameters:
+        - { name: environment, in: query, schema: { type: string, enum: [TEST, PROD] } }
+        - { name: estado, in: query, schema: { type: string } }
+        - { name: tipo, in: query, schema: { type: integer } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: pageSize, in: query, schema: { type: integer, default: 25 } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+
+  /api/v1/documents/{cdc}:
+    get:
+      tags: [Panel - Documentos]
+      summary: Detalle de un documento
+      security: [{ bearerJWT: [] }]
+      parameters:
+        - { name: cdc, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/documents/{cdc}/xml:
+    get:
+      tags: [Panel - Documentos]
+      summary: Descargar el XML firmado (application/xml)
+      security: [{ bearerJWT: [] }]
+      parameters:
+        - { name: cdc, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: XML firmado tal cual se envio a SIFEN (regla 0141)
+          content:
+            application/xml:
+              schema: { type: string }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/documents/{cdc}/retry:
+    post:
+      tags: [Panel - Documentos]
+      summary: Marcar un documento FIRMADO para reenvio a SIFEN
+      description: |
+        Marca `retry_requested=1` en un documento en estado FIRMADO (fallo transitorio de envio).
+        El worker de Go lo reintenta. Solo aplica a FIRMADO; otros estados devuelven 400.
+      security: [{ bearerJWT: [] }]
+      parameters:
+        - { name: cdc, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Documento marcado para reenvio
+          content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } }
+        "400": { $ref: "#/components/responses/Unprocessable" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+components:
+  securitySchemes:
+    bearerJWT:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "JWT del panel emitido por /auth/select-client."
+
+  responses:
+    Unauthorized:
+      description: No autenticado / token inválido
+      content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } }
+    Forbidden:
+      description: Sin permiso (rol insuficiente)
+      content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } }
+    NotFound:
+      description: Recurso inexistente
+      content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } }
+    Unprocessable:
+      description: Payload válido pero inconsistente (validación de negocio)
+      content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } }
+
+  schemas:
+    Envelope:
+      type: object
+      description: Envelope estándar de éxito.
+      properties:
+        success: { type: boolean, example: true }
+        data: { nullable: true, description: Objeto o arreglo con el resultado }
+        error: { nullable: true, example: null }
+        meta:
+          type: object
+          nullable: true
+          properties:
+            page: { type: integer }
+            pageSize: { type: integer }
+            total: { type: integer }
+      required: [success]
+
+    ErrorEnvelope:
+      type: object
+      properties:
+        success: { type: boolean, example: false }
+        data: { nullable: true, example: null }
+        error:
+          type: object
+          properties:
+            code: { type: string, example: "UNAUTHORIZED" }
+            message: { type: string, example: "falta Authorization: Bearer ..." }
+      required: [success, error]
+
+    Geo:
+      type: object
+      properties:
+        cod: { type: integer, example: 12 }
+        desc: { type: string, example: CENTRAL }
+
+    RegisterRequest:
+      type: object
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, format: password }
+        first_name: { type: string }
+        last_name: { type: string }
+        business_name: { type: string }
+        ruc: { type: string }
+        dv: { type: integer }
+      required: [email, password, business_name, ruc]
+
+    EstablecimientoRequest:
+      type: object
+      properties:
+        codigo: { type: string, example: "001" }
+        denominacion: { type: string }
+        direccion: { type: string }
+        num_casa: { type: string, example: "0" }
+        dep: { $ref: "#/components/schemas/Geo" }
+        dis: { $ref: "#/components/schemas/Geo" }
+        ciu: { $ref: "#/components/schemas/Geo" }
+        telefono: { type: string }
+        email: { type: string }
+      required: [codigo, direccion, dep, ciu]
+
+    PuntoExpedicionRequest:
+      type: object
+      properties:
+        codigo: { type: string, example: "001" }
+        descripcion: { type: string, example: "Caja 1" }
+        is_active: { type: integer, enum: [0, 1], default: 1 }
+      required: [codigo]
+
+    PanelCertificateUploadRequest:
+      type: object
+      description: Payload del panel hacia Go. Go cifra antes de persistir.
+      properties:
+        p12_base64: { type: string, description: "Contenido del .p12 en base64" }
+        password: { type: string, format: password, description: "Password del P12 en claro" }
+        subject_dn: { type: string, description: "Opcional; Go puede derivarlo del P12" }
+        not_after: { type: string, format: date-time, description: "Opcional; Go puede derivarlo del P12" }
+      required: [p12_base64, password]
+
+    PanelEnvironmentUpsertRequest:
+      type: object
+      description: Payload del panel hacia Go. Go cifra el CSC antes de persistir.
+      properties:
+        environment: { type: string, enum: [TEST, PROD] }
+        num_timbrado: { type: string, example: "06038964" }
+        fecha_inicio_vigencia: { type: string, format: date, example: "2026-07-09" }
+        id_csc: { type: string, example: "0001" }
+        csc: { type: string, description: "CSC en claro (32 hex chars típicos de SET)" }
+      required: [environment, num_timbrado, fecha_inicio_vigencia, id_csc, csc]
+
+    EnvironmentRequest:
+      type: object
+      description: El CSC llega YA cifrado (hex) por el cliente/Go; ORDS nunca ve el claro.
+      properties:
+        environment: { type: string, enum: [TEST, PROD] }
+        num_timbrado: { type: string, example: "06038964" }
+        fecha_inicio_vigencia: { type: string, format: date, example: "2026-07-09" }
+        id_csc: { type: string, example: "0001" }
+        csc_ciphertext: { type: string, description: hex }
+        csc_nonce: { type: string, description: hex }
+        key_version: { type: integer, example: 1 }
+
+    EnvironmentMeta:
+      type: object
+      description: Metadata del ambiente configurado. Nunca incluye el CSC (ni cifrado).
+      nullable: true
+      properties:
+        num_timbrado: { type: string, nullable: true, example: "06038964" }
+        fecha_inicio_vigencia: { type: string, format: date, nullable: true, example: "2026-07-09" }
+        id_csc: { type: string, nullable: true, example: "0001" }
+        key_version: { type: integer, nullable: true, example: 1 }
+        has_csc: { type: boolean, description: "true si ya hay un CSC guardado para este ambiente" }
+
+    CertificateRequest:
+      type: object
+      description: P12 y password YA cifrados (AES-256-GCM) por el cliente.
+      properties:
+        subject_dn: { type: string }
+        not_after: { type: string, format: date-time }
+        p12_ciphertext: { type: string, description: hex }
+        p12_nonce: { type: string, description: hex }
+        pwd_ciphertext: { type: string, description: hex }
+        pwd_nonce: { type: string, description: hex }
+        key_version: { type: integer, example: 1 }
+      required: [p12_ciphertext, p12_nonce, pwd_ciphertext, pwd_nonce]
+
+    KudeConfig:
+      type: object
+      properties:
+        template_id: { type: string, enum: [minimalista, corporativa], example: minimalista }
+        color_primario: { type: string, example: "#0f172a" }
+        logo_url: { type: string, nullable: true, description: "URL pública del logo en OCI" }
+        notas_footer: { type: string, nullable: true, example: "Gracias por su compra" }
+        mostrar_fantasia: { type: integer, enum: [0, 1], default: 1, description: "1=mostrar nombre fantasía en PDF si existe; 0=solo razón social" }
+
+    KudeConfigUpsertRequest:
+      type: object
+      properties:
+        template_id: { type: string, enum: [minimalista, corporativa] }
+        color_primario: { type: string, example: "#0f172a" }
+        notas_footer: { type: string, nullable: true }
+        mostrar_fantasia: { type: integer, enum: [0, 1], default: 1 }
+
+    KudeLogoUploadRequest:
+      type: object
+      properties:
+        image_hex: { type: string, description: "Contenido de la imagen en hexadecimal" }
+        mime_type: { type: string, enum: [image/png, image/jpeg, image/webp], example: image/png }
+      required: [image_hex, mime_type]

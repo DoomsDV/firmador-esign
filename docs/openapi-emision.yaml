@@ -1,0 +1,330 @@
+openapi: 3.0.3
+info:
+  title: esign — API de Emisión SIFEN
+  version: "1.0.0"
+  description: |
+    Contrato público para **integradores** (ERP, e-commerce, POS).
+
+    **Bases URL (emisión):**
+    - Homologación: `https://api-staging.etick.uno/v1` — API key `sk_test_…`
+    - Producción: `https://api.etick.uno/v1` — API key `sk_prod_…`
+
+    **No envíes XML.** Envía JSON con los datos del documento electrónico (DE). La plataforma:
+    1. Resuelve el tenant por la API key
+    2. Valida establecimiento/punto y pide correlativo
+    3. Arma el XML SIFEN, calcula CDC, firma y genera QR
+    4. Envía a SET y persiste el resultado
+
+    **Ambiente SIFEN:** lo determina exclusivamente el prefijo de la API key:
+    - `sk_test_…` → homologación (`sifen-test`)
+    - `sk_prod_…` → producción
+
+    Todas las respuestas usan el envelope `{ success, data, error, meta }`.
+
+    Guía práctica: [`guia-integracion-api.md`](./guia-integracion-api.md)
+
+servers:
+  - url: https://api-staging.etick.uno
+    description: Homologación SIFEN — Authorization Bearer sk_test_…
+  - url: https://api.etick.uno
+    description: Producción SIFEN — Authorization Bearer sk_prod_…
+
+tags:
+  - name: Emisión
+    description: Bearer sk_test_/sk_prod_
+
+security:
+  - bearerApiKey: []
+
+paths:
+  /v1/health:
+    get:
+      tags: [Emisión]
+      summary: Salud del servicio
+      security: []
+      responses:
+        "200":
+          description: Servicio operativo
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthResponse" }
+
+  /v1/documents:
+    post:
+      tags: [Emisión]
+      summary: Crear, firmar y enviar un documento electrónico (FE/NCE/NDE)
+      description: |
+        Resuelve el tenant por la API key, valida establecimiento/punto, pide el correlativo,
+        genera el CDC, firma con el certificado descifrado y envía a SIFEN (test o prod según
+        el prefijo de la key). Persiste el resultado. `201` si SIFEN aprueba (0260); `200` si
+        rechaza (el detalle va en `data`).
+      security:
+        - bearerApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateDocumentRequest" }
+            examples:
+              feInnominado:
+                summary: FE contado, receptor innominado, PYG
+                value:
+                  tipo: fe
+                  condicion: contado
+                  datos_operacion: { establecimiento: "001", punto_expedicion: "001" }
+                  receptor: { tipo: innominado }
+                  moneda: PYG
+                  items:
+                    - { codigo: "SERV-001", descripcion: "Servicio profesional", cantidad: 1, precioUnitario: 150000, afectacionIVA: 1, tasaIVA: 10 }
+              feRuc:
+                summary: FE contado, receptor RUC contribuyente, PYG
+                value:
+                  tipo: fe
+                  condicion: contado
+                  datos_operacion: { establecimiento: "001", punto_expedicion: "001" }
+                  receptor:
+                    tipo: ruc
+                    documento: "80012345"
+                    dv: 1
+                    tipoContribuyente: 2
+                    tipoOperacion: 1
+                    nombre: "Cliente SA"
+                  moneda: PYG
+                  items:
+                    - { codigo: "PROD-001", descripcion: "Producto gravado 10%", cantidad: 2, precioUnitario: 50000, afectacionIVA: 1, tasaIVA: 10 }
+              nceDevolucion:
+                summary: NCE referenciando FE aprobada (motivo 1)
+                value:
+                  tipo: nce
+                  condicion: contado
+                  datos_operacion: { establecimiento: "001", punto_expedicion: "001" }
+                  receptor:
+                    tipo: ruc
+                    documento: "80012345"
+                    dv: 1
+                    tipoContribuyente: 2
+                    tipoOperacion: 1
+                    nombre: "Cliente SA"
+                  moneda: PYG
+                  cdcRef: "01060389648001001000000812026072514730603957"
+                  motivo: 1
+                  items:
+                    - { codigo: "PROD-001", descripcion: "Devolución parcial", cantidad: 1, precioUnitario: 50000, afectacionIVA: 1, tasaIVA: 10 }
+      responses:
+        "201":
+          description: Documento aprobado por SIFEN (0260)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DocumentResponseEnvelope" }
+        "200":
+          description: Documento rechazado por SIFEN (código distinto de 0260)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DocumentResponseEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+
+  /v1/documents/{cdc}/cancel:
+    post:
+      tags: [Emisión]
+      summary: Emitir un evento de cancelación sobre un CDC
+      security:
+        - bearerApiKey: []
+      parameters:
+        - name: cdc
+          in: path
+          required: true
+          description: CDC (44 dígitos) del documento aprobado a cancelar
+          schema: { type: string, minLength: 44, maxLength: 44 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [motivo]
+              properties:
+                motivo: { type: string, minLength: 5, maxLength: 500, example: "Error en los datos del documento" }
+      responses:
+        "200":
+          description: Resultado del evento (REGISTRADO si 0600)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EventResponseEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+
+  /v1/events/inutilizacion:
+    post:
+      tags: [Emisión]
+      summary: Inutilizar un rango de numeración
+      security:
+        - bearerApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InutilizacionRequest" }
+      responses:
+        "200":
+          description: Resultado del evento (REGISTRADO si 0600)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EventResponseEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+components:
+  securitySchemes:
+    bearerApiKey:
+      type: http
+      scheme: bearer
+      description: "API key del comercio: Authorization: Bearer sk_test_... / sk_prod_..."
+
+  responses:
+    Unauthorized:
+      description: No autenticado / token inválido
+      content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } }
+    Forbidden:
+      description: Sin permiso (key revocada o cliente inactivo)
+      content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } }
+    Unprocessable:
+      description: Payload válido pero inconsistente (validación de negocio)
+      content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } }
+    BadGateway:
+      description: Error al comunicarse con SIFEN u ORDS
+      content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } }
+
+  schemas:
+    Envelope:
+      type: object
+      description: Envelope estándar de éxito.
+      properties:
+        success: { type: boolean, example: true }
+        data: { nullable: true, description: Objeto o arreglo con el resultado }
+        error: { nullable: true, example: null }
+        meta:
+          type: object
+          nullable: true
+          properties:
+            page: { type: integer }
+            pageSize: { type: integer }
+            total: { type: integer }
+      required: [success]
+
+    ErrorEnvelope:
+      type: object
+      properties:
+        success: { type: boolean, example: false }
+        data: { nullable: true, example: null }
+        error:
+          type: object
+          properties:
+            code: { type: string, example: "UNAUTHORIZED" }
+            message: { type: string, example: "falta Authorization: Bearer ..." }
+      required: [success, error]
+
+    HealthResponse:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                status: { type: string, example: ok }
+                time: { type: string, format: date-time }
+
+    ReceptorRequest:
+      type: object
+      properties:
+        tipo: { type: string, enum: [ci, ruc, innominado, extranjero] }
+        documento: { type: string }
+        dv: { type: integer, description: "DV (receptor RUC)" }
+        tipoContribuyente: { type: integer, description: "1 física, 2 jurídica (RUC)" }
+        tipoOperacion: { type: integer, description: "iTiOpe (RUC)" }
+        nombre: { type: string }
+        pais: { type: string, description: "ISO-3 ≠ PRY (extranjero)" }
+        desPais: { type: string }
+        tipoIdentificacion: { type: integer, description: "iTipIDRec (extranjero)" }
+      required: [tipo]
+
+    ItemRequest:
+      type: object
+      properties:
+        codigo: { type: string, example: "SERV-001" }
+        descripcion: { type: string }
+        cantidad: { type: number, example: 1 }
+        precioUnitario: { type: number, example: 150000 }
+        afectacionIVA: { type: integer, enum: [1, 2, 3, 4], description: "1 gravado, 2 exonerado, 3 exento, 4 parcial" }
+        tasaIVA: { type: integer, enum: [10, 5, 0] }
+        unidadMedida: { type: integer }
+        desUnidadMedida: { type: string }
+        propIVA: { type: number, description: "gravado parcial" }
+      required: [descripcion, cantidad, precioUnitario, afectacionIVA, tasaIVA]
+
+    CreateDocumentRequest:
+      type: object
+      properties:
+        tipo: { type: string, enum: [fe, nce, nde], example: fe }
+        condicion: { type: string, enum: [contado, credito], example: contado }
+        plazo: { type: string, description: "días (crédito a plazo)", example: "30" }
+        datos_operacion:
+          type: object
+          properties:
+            establecimiento: { type: string, example: "001" }
+            punto_expedicion: { type: string, example: "001" }
+        receptor: { $ref: "#/components/schemas/ReceptorRequest" }
+        moneda: { type: string, example: PYG }
+        tipoCambio: { type: number, nullable: true }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/ItemRequest" }
+        cdcRef: { type: string, description: "NCE/NDE: CDC de la factura referenciada" }
+        motivo: { type: integer, description: "NCE/NDE: motivo de emisión" }
+      required: [tipo, moneda, items]
+
+    DocumentResponseEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                cdc: { type: string, example: "01060389648001001000000812026072514730603957" }
+                estado: { type: string, enum: [APROBADO, RECHAZADO, FIRMADO], example: APROBADO }
+                codRes: { type: string, example: "0260" }
+                protAut: { type: string, example: "49767439" }
+                mensaje: { type: string }
+                qr: { type: string }
+                numeroDocumento: { type: string, example: "0000008" }
+                ambiente: { type: string, example: test }
+
+    InutilizacionRequest:
+      type: object
+      properties:
+        establecimiento: { type: string, example: "001" }
+        punto_expedicion: { type: string, example: "001" }
+        numeroInicial: { type: integer, example: 1000 }
+        numeroFinal: { type: integer, example: 1005 }
+        tipoDE: { type: integer, example: 1 }
+        motivo: { type: string, minLength: 5, maxLength: 500 }
+      required: [numeroInicial, numeroFinal, tipoDE, motivo]
+
+    EventResponseEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                estado: { type: string, enum: [REGISTRADO, RECHAZADO], example: REGISTRADO }
+                codRes: { type: string, example: "0600" }
+                protAut: { type: string }
+                mensaje: { type: string }
+                ambiente: { type: string, example: test }
