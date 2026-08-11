@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -214,6 +215,33 @@ func (s *Server) handleCancelDocument(w http.ResponseWriter, r *http.Request) {
 		ProtAut:  res.ProtAut,
 		Mensaje:  res.MsgRes,
 		Ambiente: string(cfg.Environment),
+	})
+}
+
+// handleGetKude consulta la URL pública del KuDE (PDF) de un documento ya
+// emitido. La generación es asíncrona (goroutine disparada tras el POST
+// /v1/documents), así que puede devolver estado "pending" antes de tener
+// kudeUrl; el integrador debe reintentar (polling).
+func (s *Server) handleGetKude(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	cfg := tenantFromContext(ctx)
+	cdc := r.PathValue("cdc")
+
+	kudeURL, estado, err := s.resolver.ORDS().GetKude(ctx, cfg.ClientID, cdc)
+	if err != nil {
+		var ordsErr *tenant.ORDSError
+		if errors.As(err, &ordsErr) && ordsErr.HTTPStatus == http.StatusNotFound {
+			writeErr(w, http.StatusNotFound, "NOT_FOUND", "documento inexistente")
+			return
+		}
+		writeErr(w, http.StatusBadGateway, "ORDS_ERROR", err.Error())
+		return
+	}
+
+	writeOK(w, http.StatusOK, kudeResponse{
+		CDC:     cdc,
+		Estado:  estado,
+		KudeURL: kudeURL,
 	})
 }
 

@@ -70,6 +70,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/health", s.withLogging(s.handleHealth))
 	mux.HandleFunc("POST /v1/documents", s.withLogging(s.authMiddleware(s.handleCreateDocument)))
 	mux.HandleFunc("POST /v1/documents/{cdc}/cancel", s.withLogging(s.authMiddleware(s.handleCancelDocument)))
+	mux.HandleFunc("GET /v1/documents/{cdc}/kude", s.withLogging(s.authMiddleware(s.handleGetKude)))
 	mux.HandleFunc("POST /v1/events/inutilizacion", s.withLogging(s.authMiddleware(s.handleInutilizacion)))
 	mux.HandleFunc("POST /v1/panel/certificate", s.withLogging(s.panelJWTMiddleware(true, s.handlePanelCertificate)))
 	mux.HandleFunc("PUT /v1/panel/environments", s.withLogging(s.panelJWTMiddleware(true, s.handlePanelEnvironments)))

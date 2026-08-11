@@ -235,9 +235,49 @@ curl -sS -X POST "https://api-staging.etick.uno/v1/documents" \
 
 > ⚠️ Igual que en cancelación, este `motivo` es texto libre — no el código entero de NCE/NDE.
 
+### Descargar el KuDE (PDF)
+
+**URL:** `GET https://api-staging.etick.uno/v1/documents/{cdc}/kude` (homologación) · `GET https://api.etick.uno/v1/documents/{cdc}/kude` (producción)  
+**Auth:** `Authorization: Bearer sk_test_…` / `sk_prod_…`
+
+El KuDE se renderiza (Gotenberg) y se sube al bucket **después** de que `POST /v1/documents` ya respondió, así que no llega en esa respuesta inicial. Este endpoint permite reconsultarlo:
+
+```json
+{
+  "success": true,
+  "data": {
+    "cdc": "01060389648001001000000512026072511456298312",
+    "estado": "pending"
+  }
+}
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "cdc": "01060389648001001000000512026072511456298312",
+    "estado": "ready",
+    "kudeUrl": "https://objectstorage.sa-saopaulo-1.oraclecloud.com/.../kude/01060389648001001000000512026072511456298312.pdf"
+  }
+}
+```
+
+**Polling recomendado:** reintentar cada 2–3 segundos hasta `estado: "ready"` (la generación suele tardar pocos segundos; no hace falta backoff exponencial agresivo). `404` significa CDC inexistente para ese cliente (no "aún generándose").
+
+> ⚠️ `kudeUrl` es una **URL pública** del bucket OCI: se descarga con un `GET` simple, **sin** `Authorization` ni pasar por esta API. No requiere la API key de esign para bajar el PDF.
+
+**Ejemplo curl:**
+
+```bash
+curl -sS "https://api-staging.etick.uno/v1/documents/01060389648001001000000512026072511456298312/kude" \
+  -H "Authorization: Bearer sk_test_<tu_key>"
+```
+
 ### Limitaciones conocidas
 
-- **Sin consulta de estado:** este plano de emisión no expone un `GET` para reconsultar un documento ya emitido. Guardar `cdc` + `estado` de la respuesta de `POST /v1/documents`; no hay forma de volver a pedir ese resultado por API key. La reconsulta de documentos existe solo en el plano panel (JWT), no accesible con `sk_`.
+- **Sin consulta de estado general:** este plano de emisión no expone un `GET` genérico para reconsultar el estado SIFEN completo (`estado`, `protAut`, etc.) de un documento ya emitido. Guardar `cdc` + `estado` de la respuesta de `POST /v1/documents`; no hay forma de volver a pedir ese resultado completo por API key. La reconsulta de documentos existe solo en el plano panel (JWT), no accesible con `sk_`.
+- **Excepción — KuDE:** sí existe reconsulta puntual para el PDF vía `GET /v1/documents/{cdc}/kude` (ver arriba), porque su generación es asíncrona.
 
 ### Health check
 

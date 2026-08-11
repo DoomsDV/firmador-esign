@@ -74,6 +74,15 @@ type documentResponse struct {
 	Ambiente        string `json:"ambiente"`
 }
 
+// kudeResponse es el resultado de GET /v1/documents/{cdc}/kude. La generación
+// del PDF es asíncrona (Gotenberg + subida a OCI tras el POST /v1/documents),
+// por eso puede llegar en estado "pending" antes de tener kudeUrl.
+type kudeResponse struct {
+	CDC     string `json:"cdc"`
+	Estado  string `json:"estado"` // pending | ready
+	KudeURL string `json:"kudeUrl,omitempty"`
+}
+
 // cancelRequest es el body de POST /v1/documents/{cdc}/cancel.
 type cancelRequest struct {
 	Motivo string `json:"motivo"`

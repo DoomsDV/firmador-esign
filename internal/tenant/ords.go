@@ -346,6 +346,22 @@ func (c *ORDSClient) UploadKude(ctx context.Context, clientID int, cdc string, p
 	return out.KudeURL, nil
 }
 
+// GetKude consulta la URL pública (bucket OCI) y el estado de generación del
+// KuDE de un documento ya emitido. estado: "pending" (aún generándose/sin
+// intentar) o "ready" (kudeURL disponible). Un cdc inexistente para ese
+// client_id devuelve *ORDSError con HTTPStatus 404.
+func (c *ORDSClient) GetKude(ctx context.Context, clientID int, cdc string) (kudeURL, estado string, err error) {
+	var out struct {
+		KudeURL string `json:"kude_url"`
+		Estado  string `json:"estado"`
+	}
+	err = c.post(ctx, "kude/status", map[string]any{"client_id": clientID, "cdc": cdc}, &out)
+	if err != nil {
+		return "", "", err
+	}
+	return out.KudeURL, out.Estado, nil
+}
+
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s

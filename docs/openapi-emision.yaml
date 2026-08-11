@@ -21,11 +21,15 @@ info:
 
     Todas las respuestas usan el envelope `{ success, data, error, meta }`.
 
-    **Consulta de estado:** este contrato NO expone un `GET` para reconsultar un documento
-    ya emitido. El estado final (`APROBADO`/`RECHAZADO`) llega en la respuesta síncrona de
-    `POST /v1/documents`; el integrador debe persistir `cdc` + `estado` de esa respuesta.
-    La reconsulta posterior de documentos solo existe en el plano **panel** (JWT), no
-    disponible por API key.
+    **Consulta de estado:** este contrato NO expone un `GET` genérico para reconsultar el
+    estado SIFEN completo de un documento ya emitido (`estado`, `protAut`, etc.). Esos datos
+    llegan en la respuesta síncrona de `POST /v1/documents`; el integrador debe persistir
+    `cdc` + `estado` de esa respuesta. La reconsulta posterior del documento completo solo
+    existe en el plano **panel** (JWT), no disponible por API key.
+
+    La única excepción es el **KuDE (PDF)**: su generación es asíncrona (se renderiza y sube
+    al bucket después de responder `POST /v1/documents`), por eso sí existe
+    `GET /v1/documents/{cdc}/kude` para reconsultar su URL una vez lista (ver más abajo).
 
     Guía práctica: [`guia-integracion-api.md`](./guia-integracion-api.md)
 
@@ -168,6 +172,39 @@ paths:
               schema: { $ref: "#/components/schemas/EventResponseEnvelope" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/Unprocessable" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+
+  /v1/documents/{cdc}/kude:
+    get:
+      tags: [Emisión]
+      summary: Consultar la URL del KuDE (PDF) de un documento emitido
+      description: |
+        El KuDE se genera de forma **asíncrona** (Gotenberg) y se sube al bucket OCI
+        recién después de que `POST /v1/documents` ya respondió, por lo que puede no
+        estar listo inmediatamente. Este endpoint permite hacer **polling**: mientras
+        `estado` sea `pending`, reintentar cada 2-3 segundos hasta obtener `ready`
+        (la generación suele tardar pocos segundos).
+
+        `kudeUrl` es una **URL pública** del bucket OCI: se descarga con un `GET`
+        simple, sin `Authorization` ni pasar por esta API.
+      security:
+        - bearerApiKey: []
+      parameters:
+        - name: cdc
+          in: path
+          required: true
+          description: CDC (44 dígitos) del documento emitido
+          schema: { type: string, minLength: 44, maxLength: 44 }
+      responses:
+        "200":
+          description: Estado del KuDE (pending o ready con kudeUrl)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KudeStatusEnvelope" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: CDC inexistente para este cliente
+          content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } }
         "502": { $ref: "#/components/responses/BadGateway" }
 
   /v1/events/inutilizacion:
@@ -326,6 +363,22 @@ components:
                 qr: { type: string }
                 numeroDocumento: { type: string, example: "0000008" }
                 ambiente: { type: string, example: test }
+
+    KudeStatusEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                cdc: { type: string, example: "01060389648001001000000812026072514730603957" }
+                estado: { type: string, enum: [pending, ready], example: ready }
+                kudeUrl:
+                  type: string
+                  nullable: true
+                  description: URL pública del PDF en el bucket OCI (ausente/null mientras estado=pending)
+                  example: "https://objectstorage.sa-saopaulo-1.oraclecloud.com/.../kude/01060389648001001000000812026072514730603957.pdf"
 
     InutilizacionRequest:
       type: object
