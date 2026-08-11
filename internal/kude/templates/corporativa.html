@@ -45,6 +45,7 @@
   .header .emisor .logo { max-height: 100%; max-width: 100%; width: auto; height: auto; object-fit: contain; object-position: left center; display: block; }
   .header .emisor h1 { font-size: 14px; margin: 0 0 2px; color: #0f172a; font-weight: 700; }
   .header .emisor p { margin: 1px 0; font-size: 10px; color: #64748b; }
+  .header .emisor .razon-social { font-style: italic; }
 
   .doc-box {
     border-width: 2px;
@@ -149,7 +150,12 @@
   <div class="header">
     <div class="emisor">
       {{ if .LogoURL }}<div class="logo-wrap"><img class="logo" src="{{ .LogoURL }}" alt="Logo del emisor"></div>{{ end }}
+      {{ if .Emisor.Fantasia }}
+      <h1>{{ .Emisor.Fantasia }}</h1>
+      <p class="razon-social">{{ .Emisor.Nombre }}</p>
+      {{ else }}
       <h1>{{ .Emisor.Nombre }}</h1>
+      {{ end }}
       <p>RUC: {{ .Emisor.RUC }}</p>
       <p>{{ .Emisor.Direccion }}</p>
     </div>

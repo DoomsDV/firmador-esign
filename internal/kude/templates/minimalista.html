@@ -39,6 +39,7 @@
   .header .datos-emisor { text-align: right; }
   .header .datos-emisor p { margin: 1px 0; font-size: 10px; color: #64748b; }
   .header .datos-emisor .nombre { font-size: 11px; color: #0f172a; font-weight: 700; margin-bottom: 1px; }
+  .header .datos-emisor .razon-social { font-style: italic; }
 
   .titulo-doc { margin-top: 24px; }
   .titulo-doc h1 { margin: 0; font-size: 20px; font-weight: 800; color: #0f172a; letter-spacing: -.01em; }
@@ -127,7 +128,12 @@
       {{ if .LogoURL }}<div class="logo-wrap"><img class="logo" src="{{ .LogoURL }}" alt="Logo del emisor"></div>{{ end }}
     </div>
     <div class="datos-emisor">
+      {{ if .Emisor.Fantasia }}
+      <div class="nombre">{{ .Emisor.Fantasia }}</div>
+      <p class="razon-social">{{ .Emisor.Nombre }}</p>
+      {{ else }}
       <div class="nombre">{{ .Emisor.Nombre }}</div>
+      {{ end }}
       <p>RUC {{ .Emisor.RUC }}</p>
       {{ if .Emisor.Ciudad }}<p>{{ .Emisor.Ciudad }}</p>{{ else if .Emisor.Direccion }}<p>{{ .Emisor.Direccion }}</p>{{ end }}
     </div>
