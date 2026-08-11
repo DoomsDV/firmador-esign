@@ -21,6 +21,12 @@ info:
 
     Todas las respuestas usan el envelope `{ success, data, error, meta }`.
 
+    **Consulta de estado:** este contrato NO expone un `GET` para reconsultar un documento
+    ya emitido. El estado final (`APROBADO`/`RECHAZADO`) llega en la respuesta síncrona de
+    `POST /v1/documents`; el integrador debe persistir `cdc` + `estado` de esa respuesta.
+    La reconsulta posterior de documentos solo existe en el plano **panel** (JWT), no
+    disponible por API key.
+
     Guía práctica: [`guia-integracion-api.md`](./guia-integracion-api.md)
 
 servers:
@@ -146,7 +152,14 @@ paths:
               type: object
               required: [motivo]
               properties:
-                motivo: { type: string, minLength: 5, maxLength: 500, example: "Error en los datos del documento" }
+                motivo:
+                  type: string
+                  minLength: 5
+                  maxLength: 500
+                  example: "Error en los datos del documento"
+                  description: |
+                    Texto libre justificando la cancelación (no es un código de catálogo).
+                    Distinto del campo `motivo` entero usado en `POST /v1/documents` para NCE/NDE.
       responses:
         "200":
           description: Resultado del evento (REGISTRADO si 0600)
@@ -240,6 +253,16 @@ components:
 
     ReceptorRequest:
       type: object
+      description: |
+        Los campos requeridos varían según `tipo` (OpenAPI 3.0 no expresa reglas
+        condicionales; la validación real ocurre en el motor SIFEN y responde `422`
+        si falta algo):
+        - `ci`: requiere `documento` y `nombre`.
+        - `ruc`: requiere `documento` y `dv`; `tipoContribuyente` (default `2`
+          jurídica) y `tipoOperacion` son opcionales.
+        - `innominado`: no requiere ningún otro campo.
+        - `extranjero`: requiere `pais` (ISO-3 ≠ `PRY`), `documento` y `nombre`;
+          `tipoIdentificacion` es opcional (default pasaporte).
       properties:
         tipo: { type: string, enum: [ci, ruc, innominado, extranjero] }
         documento: { type: string }
@@ -284,7 +307,7 @@ components:
           type: array
           items: { $ref: "#/components/schemas/ItemRequest" }
         cdcRef: { type: string, description: "NCE/NDE: CDC de la factura referenciada" }
-        motivo: { type: integer, description: "NCE/NDE: motivo de emisión" }
+        motivo: { $ref: "#/components/schemas/MotivoEmisionNCE" }
       required: [tipo, moneda, items]
 
     DocumentResponseEnvelope:
@@ -312,8 +335,25 @@ components:
         numeroInicial: { type: integer, example: 1000 }
         numeroFinal: { type: integer, example: 1005 }
         tipoDE: { type: integer, example: 1 }
-        motivo: { type: string, minLength: 5, maxLength: 500 }
+        motivo:
+          type: string
+          minLength: 5
+          maxLength: 500
+          description: |
+            Texto libre justificando la inutilización (no es un código de catálogo).
+            Distinto del campo `motivo` entero usado en `POST /v1/documents` para NCE/NDE.
       required: [numeroInicial, numeroFinal, tipoDE, motivo]
+
+    MotivoEmisionNCE:
+      type: integer
+      enum: [1, 2, 3, 4, 5, 6, 7, 8]
+      description: |
+        Catálogo SIFEN de motivos de emisión (Manual Técnico, campo E401), usado
+        exclusivamente en NCE/NDE. Es un código entero de catálogo, NO texto libre
+        (a diferencia del `motivo` de cancelación/inutilización, que sí es texto libre):
+        1 Devolución y Ajuste de precios · 2 Devolución · 3 Descuento · 4 Bonificación ·
+        5 Crédito incobrable · 6 Recupero de costo · 7 Recupero de gasto · 8 Ajuste de precio.
+      example: 1
 
     EventResponseEnvelope:
       allOf:

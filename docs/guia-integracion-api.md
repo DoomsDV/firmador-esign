@@ -136,7 +136,29 @@ Accept: application/json
 }
 ```
 
-**Nota de crédito (NCE):** agregar `cdcRef` (CDC de la FE aprobada) y `motivo` (entero catálogo SET); `"tipo": "nce"`.
+**Campos requeridos por `tipo` de receptor** (el schema OpenAPI no puede expresar esta regla condicional; si falta un campo obligatorio, SIFEN/Go responde `422` en tiempo de ejecución, no un error de validación de schema):
+
+| `tipo` | Requeridos | Opcionales |
+|---|---|---|
+| `ci` | `documento`, `nombre` | — |
+| `ruc` | `documento`, `dv` | `tipoContribuyente` (default `2` jurídica), `tipoOperacion` |
+| `innominado` | — (ningún otro campo) | — |
+| `extranjero` | `pais` (ISO-3 ≠ `PRY`), `documento`, `nombre` | `tipoIdentificacion` (default pasaporte) |
+
+**Nota de crédito (NCE):** agregar `cdcRef` (CDC de la FE aprobada) y `motivo`; `"tipo": "nce"`.
+
+**Catálogo de `motivo` para NCE/NDE** (código entero, campo E401 del Manual Técnico SIFEN — **no confundir** con el `motivo` de texto libre usado en cancelación/inutilización, ver §3 más abajo):
+
+| Código | Motivo |
+|---|---|
+| 1 | Devolución y Ajuste de precios |
+| 2 | Devolución |
+| 3 | Descuento |
+| 4 | Bonificación |
+| 5 | Crédito incobrable |
+| 6 | Recupero de costo |
+| 7 | Recupero de gasto |
+| 8 | Ajuste de precio |
 
 | Campo | Valores / notas |
 |---|---|
@@ -193,6 +215,8 @@ curl -sS -X POST "https://api-staging.etick.uno/v1/documents" \
 **URL:** `https://api-staging.etick.uno/v1/documents/{cdc}/cancel` (homologación) · `https://api.etick.uno/v1/documents/{cdc}/cancel` (producción)  
 **Body:** `{ "motivo": "Error en los datos del documento electrónico" }` (5–500 caracteres)
 
+> ⚠️ Este `motivo` es **texto libre**, distinto del `motivo` entero (catálogo SIFEN) usado en NCE/NDE dentro de `POST /v1/documents`. Mismo nombre de campo, conceptos distintos.
+
 ### Inutilizar numeración
 
 **URL:** `https://api-staging.etick.uno/v1/events/inutilizacion` (homologación) · `https://api.etick.uno/v1/events/inutilizacion` (producción)  
@@ -208,6 +232,12 @@ curl -sS -X POST "https://api-staging.etick.uno/v1/documents" \
   "motivo": "Numeración anulada por error de emisión"
 }
 ```
+
+> ⚠️ Igual que en cancelación, este `motivo` es texto libre — no el código entero de NCE/NDE.
+
+### Limitaciones conocidas
+
+- **Sin consulta de estado:** este plano de emisión no expone un `GET` para reconsultar un documento ya emitido. Guardar `cdc` + `estado` de la respuesta de `POST /v1/documents`; no hay forma de volver a pedir ese resultado por API key. La reconsulta de documentos existe solo en el plano panel (JWT), no accesible con `sk_`.
 
 ### Health check
 
