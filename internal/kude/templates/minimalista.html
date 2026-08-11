@@ -128,7 +128,7 @@
       {{ if .LogoURL }}<div class="logo-wrap"><img class="logo" src="{{ .LogoURL }}" alt="Logo del emisor"></div>{{ end }}
     </div>
     <div class="datos-emisor">
-      {{ if .Emisor.Fantasia }}
+      {{ if and .MostrarFantasia .Emisor.Fantasia }}
       <div class="nombre">{{ .Emisor.Fantasia }}</div>
       <p class="razon-social">{{ .Emisor.Nombre }}</p>
       {{ else }}

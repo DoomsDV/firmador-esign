@@ -36,20 +36,22 @@ var templatesFS embed.FS
 // Branding son las preferencias visuales del cliente (client_kude_config), leídas
 // por Go a través del contexto del tenant (tenant.KudeConfig).
 type Branding struct {
-	TemplateID    string
-	ColorPrimario string
-	LogoURL       string
-	NotasFooter   string
+	TemplateID      string
+	ColorPrimario   string
+	LogoURL         string
+	NotasFooter     string
+	MostrarFantasia bool
 }
 
 // KudeData es el modelo, ya formateado para mostrar, que consume la plantilla HTML.
 // Se construye una sola vez (BuildKudeData) a partir del rDE firmado; de ahí en más
 // es un valor inmutable seguro de pasar entre goroutines (a diferencia del *RDE).
 type KudeData struct {
-	TemplateID    string
-	ColorPrimario string
-	LogoURL       string
-	NotasFooter   string
+	TemplateID           string
+	ColorPrimario        string
+	LogoURL              string
+	NotasFooter          string
+	MostrarFantasia      bool
 	MostrarLeyendaPrueba bool
 	LeyendaPrueba string
 
@@ -236,6 +238,7 @@ func BuildKudeData(rde *sifen.RDE, qrURL string, ambiente string, b Branding) (K
 		ColorPrimario:        color,
 		LogoURL:              strings.TrimSpace(b.LogoURL),
 		NotasFooter:          strings.TrimSpace(b.NotasFooter),
+		MostrarFantasia:      b.MostrarFantasia,
 		MostrarLeyendaPrueba: !strings.EqualFold(strings.TrimSpace(ambiente), "prod"),
 		LeyendaPrueba:        leyendaPrueba,
 		CDC:                  formatCDC(de.Id),

@@ -150,10 +150,11 @@ type contextResponse struct {
 		KeyVersion          int    `json:"key_version"`
 	} `json:"sifen_env"`
 	KudeConfig struct {
-		TemplateID    string `json:"template_id"`
-		ColorPrimario string `json:"color_primario"`
-		LogoURL       string `json:"logo_url"`
-		NotasFooter   string `json:"notas_footer"`
+		TemplateID      string `json:"template_id"`
+		ColorPrimario   string `json:"color_primario"`
+		LogoURL         string `json:"logo_url"`
+		NotasFooter     string `json:"notas_footer"`
+		MostrarFantasia int    `json:"mostrar_fantasia"`
 	} `json:"kude_config"`
 }
 

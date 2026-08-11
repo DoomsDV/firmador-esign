@@ -150,7 +150,7 @@
   <div class="header">
     <div class="emisor">
       {{ if .LogoURL }}<div class="logo-wrap"><img class="logo" src="{{ .LogoURL }}" alt="Logo del emisor"></div>{{ end }}
-      {{ if .Emisor.Fantasia }}
+      {{ if and .MostrarFantasia .Emisor.Fantasia }}
       <h1>{{ .Emisor.Fantasia }}</h1>
       <p class="razon-social">{{ .Emisor.Nombre }}</p>
       {{ else }}

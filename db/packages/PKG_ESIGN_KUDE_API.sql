@@ -65,10 +65,11 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_kude_api AS
     l_data CLOB;
   BEGIN
     SELECT JSON_OBJECT(
-             'template_id'    VALUE NVL(k.template_id, c_default_template),
-             'color_primario' VALUE NVL(k.color_primario, c_default_color),
-             'logo_url'       VALUE k.logo_url,
-             'notas_footer'   VALUE k.notas_footer
+             'template_id'      VALUE NVL(k.template_id, c_default_template),
+             'color_primario'   VALUE NVL(k.color_primario, c_default_color),
+             'logo_url'         VALUE k.logo_url,
+             'notas_footer'     VALUE k.notas_footer,
+             'mostrar_fantasia' VALUE NVL(k.mostrar_fantasia, 1)
              RETURNING CLOB)
       INTO l_data
       FROM dual
@@ -83,7 +84,8 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_kude_api AS
   END pr_get_config;
 
   PROCEDURE pr_upsert_config(p_client_id IN NUMBER, p_role IN VARCHAR2, p_body IN CLOB, p_out OUT CLOB) IS
-    l_template VARCHAR2(30) := json_value(p_body, '$.template_id');
+    l_template  VARCHAR2(30) := json_value(p_body, '$.template_id');
+    l_mostrar   NUMBER       := json_value(p_body, '$.mostrar_fantasia');
   BEGIN
     assert_owner(p_role);
     pkg_esign_session.set_client(p_client_id);
@@ -92,18 +94,24 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_kude_api AS
       raise_application_error(pkg_esign_http.c_ora_bad_request, 'template_id debe ser minimalista o corporativa');
     END IF;
 
+    IF l_mostrar IS NOT NULL AND l_mostrar NOT IN (0, 1) THEN
+      raise_application_error(pkg_esign_http.c_ora_bad_request, 'mostrar_fantasia debe ser 0 o 1');
+    END IF;
+
     MERGE INTO client_kude_config k
     USING (SELECT p_client_id AS cid FROM dual) s
     ON (k.client_id = s.cid)
     WHEN MATCHED THEN UPDATE SET
-      template_id    = NVL(l_template, k.template_id),
-      color_primario = NVL(json_value(p_body, '$.color_primario'), k.color_primario),
-      notas_footer   = json_value(p_body, '$.notas_footer'),
-      updated_at     = CURRENT_TIMESTAMP
-    WHEN NOT MATCHED THEN INSERT (client_id, template_id, color_primario, notas_footer)
+      template_id      = NVL(l_template, k.template_id),
+      color_primario   = NVL(json_value(p_body, '$.color_primario'), k.color_primario),
+      notas_footer     = json_value(p_body, '$.notas_footer'),
+      mostrar_fantasia = NVL(l_mostrar, k.mostrar_fantasia),
+      updated_at       = CURRENT_TIMESTAMP
+    WHEN NOT MATCHED THEN INSERT (client_id, template_id, color_primario, notas_footer, mostrar_fantasia)
     VALUES (p_client_id, NVL(l_template, c_default_template),
             NVL(json_value(p_body, '$.color_primario'), c_default_color),
-            json_value(p_body, '$.notas_footer'));
+            json_value(p_body, '$.notas_footer'),
+            NVL(l_mostrar, 1));
 
     p_out := pkg_esign_util.fn_ok(fn_config_json(p_client_id));
   END pr_upsert_config;

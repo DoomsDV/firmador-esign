@@ -316,10 +316,11 @@ func eventID() int {
 // fallo de Gotenberg/ORDS nunca afecta la respuesta ya enviada al cliente.
 func (s *Server) triggerKudeGeneration(cfg *tenant.Config, rde *sifen.RDE, qrURL, cdc string) {
 	data, err := kude.BuildKudeData(rde, qrURL, cfg.EnvUpper(), kude.Branding{
-		TemplateID:    cfg.KudeConfig.TemplateID,
-		ColorPrimario: cfg.KudeConfig.ColorPrimario,
-		LogoURL:       cfg.KudeConfig.LogoURL,
-		NotasFooter:   cfg.KudeConfig.NotasFooter,
+		TemplateID:      cfg.KudeConfig.TemplateID,
+		ColorPrimario:   cfg.KudeConfig.ColorPrimario,
+		LogoURL:         cfg.KudeConfig.LogoURL,
+		NotasFooter:     cfg.KudeConfig.NotasFooter,
+		MostrarFantasia: cfg.KudeConfig.MostrarFantasia,
 	})
 	if err != nil {
 		fmt.Printf("[warn] kude %s: armando datos: %v\n", cdc, err)
