@@ -287,6 +287,24 @@ BEGIN
     htp.p(l_out);
 END;]');
 
+  ords.define_template(p_module_name => 'esign', p_pattern => 'environments/:env');
+  ords.define_handler(
+    p_module_name => 'esign', p_pattern => 'environments/:env', p_method => 'GET',
+    p_source_type => ords.source_type_plsql,
+    p_source => q'[
+DECLARE
+    l_out  CLOB;
+    l_auth VARCHAR2(4000) := owa_util.get_cgi_env('AUTHORIZATION');
+BEGIN
+    pkg_esign_client_api.pr_get_env(
+        p_client_id   => pkg_esign_util.fn_get_client_id_from_jwt(l_auth),
+        p_role        => pkg_esign_util.fn_get_role_from_jwt(l_auth),
+        p_environment => UPPER(:env),
+        p_out         => l_out
+    );
+    htp.p(l_out);
+END;]');
+
   ---------------------------------------------------------------------------
   -- API KEYS
   ---------------------------------------------------------------------------

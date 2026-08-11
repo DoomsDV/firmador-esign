@@ -204,8 +204,16 @@ Cada establecimiento (sucursal) tiene su propia dirección/geo (va en `gEmis` de
 
 | Método | Ruta | Rol | Descripción |
 |---|---|---|---|
-| `GET` | `/api/v1/environments/{test\|prod}` | owner | Timbrado, dFeIniT, IdCSC (nunca el CSC en claro) |
+| `GET` | `/api/v1/environments/{test\|prod}` | owner | Timbrado, dFeIniT, IdCSC (nunca el CSC en claro) — **implementado** |
 | `PUT` | `/api/v1/environments` | owner | Upsert del ambiente (timbrado + CSC cifrado) |
+
+**`GET /environments/test`** — response (ambiente configurado):
+
+```json
+{ "success": true, "data": { "num_timbrado": "06038964", "fecha_inicio_vigencia": "2026-07-09", "id_csc": "0001", "key_version": 1, "has_csc": true } }
+```
+
+Si el ambiente todavía no fue configurado, `data` viene ausente/`null` (el panel lo interpreta como formulario vacío, no como error). El CSC (ni cifrado) nunca se expone por este endpoint.
 
 **`PUT /environments`** — request (el CSC llega **ya cifrado** en hex por el cliente/Go; ORDS nunca ve el claro):
 

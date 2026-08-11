@@ -360,6 +360,35 @@ paths:
       responses:
         "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
 
+  /api/v1/environments/{env}:
+    get:
+      tags: [Panel - Cliente]
+      summary: Metadata de timbrado/CSC del ambiente (solo owner, nunca el CSC)
+      description: |
+        Devuelve `num_timbrado`, `fecha_inicio_vigencia`, `id_csc`, `key_version` y `has_csc`
+        para precargar el panel. `data` es `null` si el ambiente todavía no fue configurado.
+        El CSC (ni cifrado) nunca se expone por este endpoint.
+      security: [{ bearerJWT: [] }]
+      servers: [{ url: "https://g9549f707e8ebfa-aoxdev.adb.sa-saopaulo-1.oraclecloudapps.com/ords/esign" }]
+      parameters:
+        - name: env
+          in: path
+          required: true
+          schema: { type: string, enum: [test, prod] }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: "#/components/schemas/Envelope" }
+                  - type: object
+                    properties:
+                      data: { $ref: "#/components/schemas/EnvironmentMeta" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   /api/v1/api-keys:
     get:
       tags: [Panel - API keys]
@@ -916,6 +945,16 @@ components:
         csc_ciphertext: { type: string, description: hex }
         csc_nonce: { type: string, description: hex }
         key_version: { type: integer, example: 1 }
+    EnvironmentMeta:
+      type: object
+      description: Metadata del ambiente configurado. Nunca incluye el CSC (ni cifrado).
+      nullable: true
+      properties:
+        num_timbrado: { type: string, nullable: true, example: "06038964" }
+        fecha_inicio_vigencia: { type: string, format: date, nullable: true, example: "2026-07-09" }
+        id_csc: { type: string, nullable: true, example: "0001" }
+        key_version: { type: integer, nullable: true, example: 1 }
+        has_csc: { type: boolean, description: "true si ya hay un CSC guardado para este ambiente" }
       required: [environment, num_timbrado, fecha_inicio_vigencia, id_csc, csc_ciphertext, csc_nonce]
 
     CertificateRequest:
