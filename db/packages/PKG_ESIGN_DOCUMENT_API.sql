@@ -13,6 +13,12 @@ CREATE OR REPLACE PACKAGE pkg_esign_document_api AS
   -- Lookup por Idempotency-Key (cliente+ambiente). Devuelve found=false si no hay match.
   PROCEDURE pr_find_by_idempotency(p_client_id IN NUMBER, p_body IN CLOB, p_out OUT CLOB);
 
+  -- Reclama atómicamente una Idempotency-Key antes de construir, firmar o enviar.
+  -- Devuelve ACQUIRED, IN_FLIGHT o COMPLETED (con el DE previamente emitido).
+  PROCEDURE pr_claim_idempotency(p_client_id IN NUMBER, p_body IN CLOB, p_out OUT CLOB);
+  -- Libera un reclamo que falló antes de iniciar el envío irreversible a SIFEN.
+  PROCEDURE pr_release_idempotency(p_client_id IN NUMBER, p_body IN CLOB, p_out OUT CLOB);
+
   -- Marca un documento FIRMADO para reenvio (fallo transitorio de envio a SET). El worker
   -- de Go lo reintenta. Solo aplica a estado FIRMADO; otros estados devuelven error.
   PROCEDURE pr_request_retry(p_client_id IN NUMBER, p_cdc IN VARCHAR2, p_out OUT CLOB);
@@ -70,6 +76,29 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
 
     SELECT id_document INTO l_doc_id FROM document WHERE client_id = p_client_id AND cdc = l_cdc;
 
+    IF NULLIF(TRIM(l_idem), '') IS NOT NULL THEN
+      MERGE /*+ no_parallel */ INTO document_idempotency i
+      USING (
+        SELECT p_client_id AS client_id,
+               json_value(p_body, '$.environment') AS environment,
+               TRIM(l_idem) AS idempotency_key,
+               l_cdc AS cdc
+          FROM dual
+      ) s
+      ON (i.client_id = s.client_id
+          AND i.environment = s.environment
+          AND i.idempotency_key = s.idempotency_key)
+      WHEN MATCHED THEN UPDATE SET
+        status = 'COMPLETED',
+        cdc = s.cdc,
+        updated_at = SYSTIMESTAMP
+      WHEN NOT MATCHED THEN INSERT (
+        client_id, environment, idempotency_key, status, cdc, created_at, updated_at
+      ) VALUES (
+        s.client_id, s.environment, s.idempotency_key, 'COMPLETED', s.cdc, SYSTIMESTAMP, SYSTIMESTAMP
+      );
+    END IF;
+
     IF l_xml IS NOT NULL OR l_qr IS NOT NULL THEN
       MERGE /*+ no_parallel */ INTO document_xml x
       USING (SELECT l_doc_id AS did FROM dual) s
@@ -123,6 +152,151 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
 
     p_out := pkg_esign_util.fn_ok(l_data);
   END pr_find_by_idempotency;
+
+  PROCEDURE pr_claim_idempotency(p_client_id IN NUMBER, p_body IN CLOB, p_out OUT CLOB) IS
+    l_env    VARCHAR2(4)   := UPPER(TRIM(json_value(p_body, '$.environment')));
+    l_key    VARCHAR2(128) := TRIM(json_value(p_body, '$.idempotency_key'));
+    l_status document_idempotency.status%TYPE;
+    l_cdc    document_idempotency.cdc%TYPE;
+    l_data   CLOB;
+  BEGIN
+    pkg_esign_session.set_client(p_client_id);
+
+    IF l_key IS NULL OR l_env NOT IN ('TEST', 'PROD') THEN
+      raise_application_error(pkg_esign_http.c_ora_bad_request,
+        'environment e idempotency_key son obligatorios');
+    END IF;
+
+    BEGIN
+      INSERT /*+ no_parallel */ INTO document_idempotency (
+        client_id, environment, idempotency_key, status, created_at, updated_at
+      ) VALUES (
+        p_client_id, l_env, l_key, 'IN_FLIGHT', SYSTIMESTAMP, SYSTIMESTAMP
+      );
+    EXCEPTION
+      WHEN DUP_VAL_ON_INDEX THEN
+        SELECT status, cdc INTO l_status, l_cdc
+          FROM document_idempotency
+         WHERE client_id = p_client_id
+           AND environment = l_env
+           AND idempotency_key = l_key;
+
+        IF l_status = 'COMPLETED' AND l_cdc IS NOT NULL THEN
+          BEGIN
+            SELECT JSON_OBJECT(
+                     'claim_status' VALUE 'COMPLETED',
+                     'found' VALUE 'true' FORMAT JSON,
+                     'cdc' VALUE d.cdc,
+                     'estado' VALUE d.estado,
+                     'cod_res' VALUE d.cod_res,
+                     'prot_aut' VALUE d.prot_aut,
+                     'mensaje_res' VALUE d.mensaje_res,
+                     'num_documento' VALUE d.num_documento,
+                     'ambiente' VALUE LOWER(d.environment),
+                     'qr_url' VALUE x.qr_url
+                     RETURNING CLOB)
+              INTO l_data
+              FROM document d
+              LEFT JOIN document_xml x ON x.document_id = d.id_document
+             WHERE d.client_id = p_client_id
+               AND d.cdc = l_cdc;
+          EXCEPTION
+            WHEN NO_DATA_FOUND THEN
+              l_data := NULL;
+          END;
+        END IF;
+
+        IF l_data IS NULL THEN
+          SELECT JSON_OBJECT(
+                   'claim_status' VALUE 'IN_FLIGHT',
+                   'found' VALUE 'false' FORMAT JSON
+                   RETURNING CLOB)
+            INTO l_data
+            FROM dual;
+        END IF;
+        p_out := pkg_esign_util.fn_ok(l_data);
+        RETURN;
+    END;
+
+    -- Backfill defensivo: una emisión previa al endpoint de claim ya es definitiva.
+    BEGIN
+      SELECT cdc INTO l_cdc
+        FROM document
+       WHERE client_id = p_client_id
+         AND environment = l_env
+         AND idempotency_key = l_key
+       FETCH FIRST 1 ROWS ONLY;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        l_cdc := NULL;
+    END;
+
+    IF l_cdc IS NOT NULL THEN
+      UPDATE /*+ no_parallel */ document_idempotency
+         SET status = 'COMPLETED',
+             cdc = l_cdc,
+             updated_at = SYSTIMESTAMP
+       WHERE client_id = p_client_id
+         AND environment = l_env
+         AND idempotency_key = l_key;
+
+      SELECT JSON_OBJECT(
+               'claim_status' VALUE 'COMPLETED',
+               'found' VALUE 'true' FORMAT JSON,
+               'cdc' VALUE d.cdc,
+               'estado' VALUE d.estado,
+               'cod_res' VALUE d.cod_res,
+               'prot_aut' VALUE d.prot_aut,
+               'mensaje_res' VALUE d.mensaje_res,
+               'num_documento' VALUE d.num_documento,
+               'ambiente' VALUE LOWER(d.environment),
+               'qr_url' VALUE x.qr_url
+               RETURNING CLOB)
+        INTO l_data
+        FROM document d
+        LEFT JOIN document_xml x ON x.document_id = d.id_document
+       WHERE d.client_id = p_client_id
+         AND d.cdc = l_cdc;
+      p_out := pkg_esign_util.fn_ok(l_data);
+      RETURN;
+    END IF;
+
+    SELECT JSON_OBJECT(
+             'claim_status' VALUE 'ACQUIRED',
+             'found' VALUE 'false' FORMAT JSON
+             RETURNING CLOB)
+      INTO l_data
+      FROM dual;
+    p_out := pkg_esign_util.fn_ok(l_data);
+  END pr_claim_idempotency;
+
+  PROCEDURE pr_release_idempotency(p_client_id IN NUMBER, p_body IN CLOB, p_out OUT CLOB) IS
+    l_env     VARCHAR2(4)   := UPPER(TRIM(json_value(p_body, '$.environment')));
+    l_key     VARCHAR2(128) := TRIM(json_value(p_body, '$.idempotency_key'));
+    l_released NUMBER;
+    l_data    CLOB;
+  BEGIN
+    pkg_esign_session.set_client(p_client_id);
+
+    IF l_key IS NULL OR l_env NOT IN ('TEST', 'PROD') THEN
+      raise_application_error(pkg_esign_http.c_ora_bad_request,
+        'environment e idempotency_key son obligatorios');
+    END IF;
+
+    DELETE /*+ no_parallel */ FROM document_idempotency
+     WHERE client_id = p_client_id
+       AND environment = l_env
+       AND idempotency_key = l_key
+       AND status = 'IN_FLIGHT';
+    l_released := SQL%ROWCOUNT;
+
+    SELECT JSON_OBJECT(
+             'released' VALUE CASE WHEN l_released = 1 THEN 'true' ELSE 'false' END FORMAT JSON
+             RETURNING CLOB)
+      INTO l_data
+      FROM dual;
+    p_out := pkg_esign_util.fn_ok(l_data);
+  END pr_release_idempotency;
 
   PROCEDURE pr_register_event(p_client_id IN NUMBER, p_body IN CLOB, p_out OUT CLOB) IS
     l_doc_id document.id_document%TYPE;

@@ -26,6 +26,7 @@ PROMPT === Tablas ===
 @@tables/17_client_certificate.sql
 @@tables/18_client_invitation.sql
 @@tables/19_client_kude_config.sql
+@@tables/20_document_idempotency.sql
 
 PROMPT === Paquete de sesion (requerido por el contexto) ===
 @@packages/PKG_ESIGN_SESSION.sql

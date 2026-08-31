@@ -264,8 +264,47 @@ type IdempotentDocument struct {
 	Found           bool   `json:"found"`
 }
 
+// IdempotencyClaim es el resultado del reclamo atómico de una Idempotency-Key.
+// ClaimStatus es ACQUIRED, IN_FLIGHT o COMPLETED. COMPLETED incluye el DE previo.
+type IdempotencyClaim struct {
+	ClaimStatus     string `json:"claim_status"`
+	CDC             string `json:"cdc"`
+	Estado          string `json:"estado"`
+	CodRes          string `json:"cod_res"`
+	ProtAut         string `json:"prot_aut"`
+	MensajeRes      string `json:"mensaje_res"`
+	NumeroDocumento string `json:"num_documento"`
+	Ambiente        string `json:"ambiente"`
+	QRURL           string `json:"qr_url"`
+	Found           bool   `json:"found"`
+}
+
 func (c *ORDSClient) RegisterDocument(ctx context.Context, rec DocumentRecord) error {
 	return c.post(ctx, "documents", rec, nil)
+}
+
+// ClaimIdempotency reclama una clave antes de la emisión. Solo ACQUIRED permite
+// seguir con la construcción, firma y envío a SIFEN.
+func (c *ORDSClient) ClaimIdempotency(ctx context.Context, clientID int, env, key string) (*IdempotencyClaim, error) {
+	var out IdempotencyClaim
+	err := c.post(ctx, "documents/idempotency/claim", map[string]any{
+		"client_id":       clientID,
+		"environment":     env,
+		"idempotency_key": key,
+	}, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ReleaseIdempotency libera un reclamo que no alcanzó a iniciar el envío a SIFEN.
+func (c *ORDSClient) ReleaseIdempotency(ctx context.Context, clientID int, env, key string) error {
+	return c.post(ctx, "documents/idempotency/release", map[string]any{
+		"client_id":       clientID,
+		"environment":     env,
+		"idempotency_key": key,
+	}, nil)
 }
 
 // FindByIdempotencyKey busca un DE ya emitido para (client, env, key). found=false si no hay.

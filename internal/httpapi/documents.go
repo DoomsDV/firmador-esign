@@ -34,28 +34,49 @@ func (s *Server) handleCreateDocument(w http.ResponseWriter, r *http.Request) {
 	}
 
 	idemKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
-	if idemKey != "" {
-		existing, err := s.resolver.ORDS().FindByIdempotencyKey(ctx, cfg.ClientID, cfg.EnvUpper(), idemKey)
-		if err == nil && existing != nil && existing.Found && existing.CDC != "" {
-			writeOK(w, http.StatusOK, documentResponse{
-				CDC:             existing.CDC,
-				Estado:          existing.Estado,
-				CodRes:          existing.CodRes,
-				ProtAut:         existing.ProtAut,
-				Mensaje:         existing.MensajeRes,
-				QR:              existing.QRURL,
-				NumeroDocumento: existing.NumeroDocumento,
-				Ambiente:        existing.Ambiente,
-			})
-			return
-		}
-	}
-
 	op, err := resolveOperacion(cfg, &req)
 	if err != nil {
 		writeErr(w, http.StatusUnprocessableEntity, "INVALID_OPERATION", err.Error())
 		return
 	}
+
+	claimed := false
+	sendStarted := false
+	if idemKey != "" {
+		claim, err := s.resolver.ORDS().ClaimIdempotency(ctx, cfg.ClientID, cfg.EnvUpper(), idemKey)
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, "IDEMPOTENCY_ERROR", "no se pudo reclamar Idempotency-Key: "+err.Error())
+			return
+		}
+		switch claim.ClaimStatus {
+		case "COMPLETED":
+			if claim.CDC == "" {
+				writeErr(w, http.StatusBadGateway, "IDEMPOTENCY_ERROR", "Idempotency-Key completada sin documento")
+				return
+			}
+			writeIdempotentDocument(w, claim)
+			return
+		case "IN_FLIGHT":
+			writeErr(w, http.StatusConflict, "IDEMPOTENCY_IN_PROGRESS",
+				"ya hay una solicitud en curso con esta Idempotency-Key; reintentá con la misma clave")
+			return
+		case "ACQUIRED":
+			claimed = true
+		default:
+			writeErr(w, http.StatusBadGateway, "IDEMPOTENCY_ERROR", "respuesta de reclamo de idempotencia inválida")
+			return
+		}
+	}
+	defer func() {
+		if !claimed || sendStarted {
+			return
+		}
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := s.resolver.ORDS().ReleaseIdempotency(releaseCtx, cfg.ClientID, cfg.EnvUpper(), idemKey); err != nil {
+			fmt.Printf("[warn] release idempotency key for client %d: %v\n", cfg.ClientID, err)
+		}
+	}()
 
 	numeroDoc, err := s.resolver.ORDS().NextNumber(ctx, cfg.ClientID, cfg.EnvUpper(), op.Est.Codigo, op.Punto, op.TipoDE)
 	if err != nil {
@@ -132,6 +153,7 @@ func (s *Server) handleCreateDocument(w http.ResponseWriter, r *http.Request) {
 	}
 	sendCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
+	sendStarted = true
 	code, body, err := client.RecibirDESync(sendCtx, int64(numeroDoc), xmlOut)
 	if err != nil {
 		// El DE quedó firmado pero no se pudo enviar: se registra como FIRMADO.
@@ -162,6 +184,21 @@ func (s *Server) handleCreateDocument(w http.ResponseWriter, r *http.Request) {
 		QR:              qrURL,
 		NumeroDocumento: fmt.Sprintf("%07d", numeroDoc),
 		Ambiente:        string(cfg.Environment),
+	})
+}
+
+// writeIdempotentDocument responde el resultado previamente persistido de una
+// Idempotency-Key completada, sin construir, firmar ni reenviar el DE.
+func writeIdempotentDocument(w http.ResponseWriter, doc *tenant.IdempotencyClaim) {
+	writeOK(w, http.StatusOK, documentResponse{
+		CDC:             doc.CDC,
+		Estado:          doc.Estado,
+		CodRes:          doc.CodRes,
+		ProtAut:         doc.ProtAut,
+		Mensaje:         doc.MensajeRes,
+		QR:              doc.QRURL,
+		NumeroDocumento: doc.NumeroDocumento,
+		Ambiente:        doc.Ambiente,
 	})
 }
 
