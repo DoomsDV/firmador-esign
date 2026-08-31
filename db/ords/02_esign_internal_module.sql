@@ -198,6 +198,36 @@ BEGIN
 END;]');
 
   ---------------------------------------------------------------------------
+  -- DOCUMENTS/BY-IDEMPOTENCY: lookup por Idempotency-Key (retry sin nuevo CDC).
+  ---------------------------------------------------------------------------
+  ords.define_template(p_module_name => 'esign_internal', p_pattern => 'documents/by-idempotency');
+  ords.define_handler(
+    p_module_name => 'esign_internal', p_pattern => 'documents/by-idempotency', p_method => 'POST',
+    p_source_type => ords.source_type_plsql,
+    p_source => q'[
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+BEGIN
+    IF NOT pkg_esign_util.fn_service_token_ok(owa_util.get_cgi_env('X-Service-Token')) THEN
+        pkg_esign_http.pr_error(
+            p_status  => pkg_esign_http.c_unauthorized,
+            p_reason  => pkg_esign_http.m_unauthorized,
+            p_code    => pkg_esign_http.e_unauthorized,
+            p_message => pkg_esign_http.msg_service_token
+        );
+        RETURN;
+    END IF;
+
+    pkg_esign_document_api.pr_find_by_idempotency(
+        p_client_id => TO_NUMBER(json_value(l_body, '$.client_id')),
+        p_body      => l_body,
+        p_out       => l_out
+    );
+    htp.p(l_out);
+END;]');
+
+  ---------------------------------------------------------------------------
   -- KUDE: Go sube el PDF ya renderizado (Gotenberg) al bucket OCI y lo asocia al CDC.
   ---------------------------------------------------------------------------
   ords.define_template(p_module_name => 'esign_internal', p_pattern => 'kude');

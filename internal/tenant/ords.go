@@ -248,10 +248,38 @@ type DocumentRecord struct {
 	XMLFirmado      string `json:"xml_firmado"`
 	QRURL           string `json:"qr_url"`
 	FromRetry       bool   `json:"from_retry,omitempty"`
+	IdempotencyKey  string `json:"idempotency_key,omitempty"`
+}
+
+// IdempotentDocument es el resultado de una emisión previa por Idempotency-Key.
+type IdempotentDocument struct {
+	CDC             string `json:"cdc"`
+	Estado          string `json:"estado"`
+	CodRes          string `json:"cod_res"`
+	ProtAut         string `json:"prot_aut"`
+	MensajeRes      string `json:"mensaje_res"`
+	NumeroDocumento string `json:"num_documento"`
+	Ambiente        string `json:"ambiente"`
+	QRURL           string `json:"qr_url"`
+	Found           bool   `json:"found"`
 }
 
 func (c *ORDSClient) RegisterDocument(ctx context.Context, rec DocumentRecord) error {
 	return c.post(ctx, "documents", rec, nil)
+}
+
+// FindByIdempotencyKey busca un DE ya emitido para (client, env, key). found=false si no hay.
+func (c *ORDSClient) FindByIdempotencyKey(ctx context.Context, clientID int, env, key string) (*IdempotentDocument, error) {
+	var out IdempotentDocument
+	err := c.post(ctx, "documents/by-idempotency", map[string]any{
+		"client_id":       clientID,
+		"environment":     env,
+		"idempotency_key": key,
+	}, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // PendingRetryDoc es un DE FIRMADO listo para reenvio (XML ya firmado).

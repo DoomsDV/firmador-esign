@@ -10,6 +10,9 @@ CREATE OR REPLACE PACKAGE pkg_esign_document_api AS
   PROCEDURE pr_get_document(p_client_id IN NUMBER, p_cdc IN VARCHAR2, p_out OUT CLOB);
   PROCEDURE pr_get_xml(p_client_id IN NUMBER, p_cdc IN VARCHAR2, p_out OUT CLOB);
 
+  -- Lookup por Idempotency-Key (cliente+ambiente). Devuelve found=false si no hay match.
+  PROCEDURE pr_find_by_idempotency(p_client_id IN NUMBER, p_body IN CLOB, p_out OUT CLOB);
+
   -- Marca un documento FIRMADO para reenvio (fallo transitorio de envio a SET). El worker
   -- de Go lo reintenta. Solo aplica a estado FIRMADO; otros estados devuelven error.
   PROCEDURE pr_request_retry(p_client_id IN NUMBER, p_cdc IN VARCHAR2, p_out OUT CLOB);
@@ -25,6 +28,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
 
   PROCEDURE pr_register_document(p_client_id IN NUMBER, p_body IN CLOB, p_out OUT CLOB) IS
     l_cdc  VARCHAR2(44) := json_value(p_body, '$.cdc');
+    l_idem VARCHAR2(128) := json_value(p_body, '$.idempotency_key');
     l_doc_id document.id_document%TYPE;
     l_xml  CLOB := json_value(p_body, '$.xml_firmado' RETURNING CLOB);
     l_qr   VARCHAR2(1000) := json_value(p_body, '$.qr_url');
@@ -40,7 +44,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
       cod_res = json_value(p_body, '$.cod_res'),
       prot_aut = json_value(p_body, '$.prot_aut'),
       mensaje_res = json_value(p_body, '$.mensaje_res'),
-      -- Worker de reenvio: limpia el flag e incrementa contador (from_retry=true).
+      idempotency_key = NVL(d.idempotency_key, NULLIF(TRIM(l_idem), '')),
       retry_requested = CASE
                           WHEN NVL(json_value(p_body, '$.from_retry'), 'false') IN ('true','1')
                           THEN 0 ELSE d.retry_requested END,
@@ -52,7 +56,8 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
                         THEN SYSTIMESTAMP ELSE d.last_retry_at END
     WHEN NOT MATCHED THEN INSERT
       (client_id, environment, tipo_de, cdc, num_documento, establecimiento, punto_expedicion,
-       receptor_nombre, receptor_doc, moneda, total_operacion, estado, cod_res, prot_aut, mensaje_res, fecha_emision)
+       receptor_nombre, receptor_doc, moneda, total_operacion, estado, cod_res, prot_aut, mensaje_res,
+       fecha_emision, idempotency_key)
     VALUES
       (p_client_id, json_value(p_body, '$.environment'), json_value(p_body, '$.tipo_de'),
        l_cdc, json_value(p_body, '$.num_documento'),
@@ -60,11 +65,11 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
        json_value(p_body, '$.receptor_nombre'), json_value(p_body, '$.receptor_doc'),
        json_value(p_body, '$.moneda'), json_value(p_body, '$.total_operacion'),
        json_value(p_body, '$.estado'), json_value(p_body, '$.cod_res'),
-       json_value(p_body, '$.prot_aut'), json_value(p_body, '$.mensaje_res'), SYSTIMESTAMP);
+       json_value(p_body, '$.prot_aut'), json_value(p_body, '$.mensaje_res'), SYSTIMESTAMP,
+       NULLIF(TRIM(l_idem), ''));
 
     SELECT id_document INTO l_doc_id FROM document WHERE client_id = p_client_id AND cdc = l_cdc;
 
-    -- Persistir XML/QR si vienen (regla 0141: es el XML tal cual se envio a SIFEN).
     IF l_xml IS NOT NULL OR l_qr IS NOT NULL THEN
       MERGE /*+ no_parallel */ INTO document_xml x
       USING (SELECT l_doc_id AS did FROM dual) s
@@ -77,6 +82,47 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
     SELECT JSON_OBJECT('document_id' VALUE l_doc_id, 'cdc' VALUE l_cdc RETURNING CLOB) INTO l_data FROM dual;
     p_out := pkg_esign_util.fn_ok(l_data);
   END pr_register_document;
+
+  PROCEDURE pr_find_by_idempotency(p_client_id IN NUMBER, p_body IN CLOB, p_out OUT CLOB) IS
+    l_env  VARCHAR2(4)   := json_value(p_body, '$.environment');
+    l_key  VARCHAR2(128) := TRIM(json_value(p_body, '$.idempotency_key'));
+    l_data CLOB;
+  BEGIN
+    pkg_esign_session.set_client(p_client_id);
+
+    IF l_key IS NULL OR l_env IS NULL THEN
+      SELECT JSON_OBJECT('found' VALUE FALSE RETURNING CLOB) INTO l_data FROM dual;
+      p_out := pkg_esign_util.fn_ok(l_data);
+      RETURN;
+    END IF;
+
+    BEGIN
+      SELECT JSON_OBJECT(
+               'found' VALUE TRUE,
+               'cdc' VALUE d.cdc,
+               'estado' VALUE d.estado,
+               'cod_res' VALUE d.cod_res,
+               'prot_aut' VALUE d.prot_aut,
+               'mensaje_res' VALUE d.mensaje_res,
+               'num_documento' VALUE d.num_documento,
+               'ambiente' VALUE LOWER(d.environment),
+               'qr_url' VALUE x.qr_url
+               RETURNING CLOB)
+        INTO l_data
+        FROM document d
+        LEFT JOIN document_xml x ON x.document_id = d.id_document
+       WHERE d.client_id = p_client_id
+         AND d.environment = l_env
+         AND d.idempotency_key = l_key
+         AND d.cdc IS NOT NULL
+       FETCH FIRST 1 ROWS ONLY;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        SELECT JSON_OBJECT('found' VALUE FALSE RETURNING CLOB) INTO l_data FROM dual;
+    END;
+
+    p_out := pkg_esign_util.fn_ok(l_data);
+  END pr_find_by_idempotency;
 
   PROCEDURE pr_register_event(p_client_id IN NUMBER, p_body IN CLOB, p_out OUT CLOB) IS
     l_doc_id document.id_document%TYPE;

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -30,6 +31,24 @@ func (s *Server) handleCreateDocument(w http.ResponseWriter, r *http.Request) {
 	if !cfg.CertAvailable {
 		writeErr(w, http.StatusUnprocessableEntity, "NO_CERTIFICATE", "el tenant no tiene certificado cargado")
 		return
+	}
+
+	idemKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idemKey != "" {
+		existing, err := s.resolver.ORDS().FindByIdempotencyKey(ctx, cfg.ClientID, cfg.EnvUpper(), idemKey)
+		if err == nil && existing != nil && existing.Found && existing.CDC != "" {
+			writeOK(w, http.StatusOK, documentResponse{
+				CDC:             existing.CDC,
+				Estado:          existing.Estado,
+				CodRes:          existing.CodRes,
+				ProtAut:         existing.ProtAut,
+				Mensaje:         existing.MensajeRes,
+				QR:              existing.QRURL,
+				NumeroDocumento: existing.NumeroDocumento,
+				Ambiente:        existing.Ambiente,
+			})
+			return
+		}
 	}
 
 	op, err := resolveOperacion(cfg, &req)
@@ -116,14 +135,14 @@ func (s *Server) handleCreateDocument(w http.ResponseWriter, r *http.Request) {
 	code, body, err := client.RecibirDESync(sendCtx, int64(numeroDoc), xmlOut)
 	if err != nil {
 		// El DE quedó firmado pero no se pudo enviar: se registra como FIRMADO.
-		s.persistDocument(ctx, cfg, build, cdc, numeroDoc, totGralOpe, qrURL, xmlOut, sifenResult{}, "FIRMADO")
+		s.persistDocument(ctx, cfg, build, cdc, numeroDoc, totGralOpe, qrURL, xmlOut, sifenResult{}, "FIRMADO", idemKey)
 		writeErr(w, http.StatusBadGateway, "SEND_ERROR", "firmado pero no enviado a SIFEN: "+err.Error())
 		return
 	}
 
 	res := parseSifenResult(body)
 	estado := estadoDE(res.CodRes)
-	s.persistDocument(ctx, cfg, build, cdc, numeroDoc, totGralOpe, qrURL, xmlOut, res, estado)
+	s.persistDocument(ctx, cfg, build, cdc, numeroDoc, totGralOpe, qrURL, xmlOut, res, estado, idemKey)
 
 	if estado == "APROBADO" {
 		s.triggerKudeGeneration(cfg, rde, qrURL, cdc)
@@ -148,7 +167,7 @@ func (s *Server) handleCreateDocument(w http.ResponseWriter, r *http.Request) {
 
 // persistDocument registra el documento y su XML/QR en ORDS (best-effort: un fallo
 // de persistencia no invalida la emisión ya realizada).
-func (s *Server) persistDocument(ctx context.Context, cfg *tenant.Config, build *buildResult, cdc string, numeroDoc int, total decimal.Decimal, qrURL string, xmlOut []byte, res sifenResult, estado string) {
+func (s *Server) persistDocument(ctx context.Context, cfg *tenant.Config, build *buildResult, cdc string, numeroDoc int, total decimal.Decimal, qrURL string, xmlOut []byte, res sifenResult, estado, idemKey string) {
 	rec := tenant.DocumentRecord{
 		ClientID:        cfg.ClientID,
 		Environment:     cfg.EnvUpper(),
@@ -167,6 +186,7 @@ func (s *Server) persistDocument(ctx context.Context, cfg *tenant.Config, build 
 		MensajeRes:      res.MsgRes,
 		XMLFirmado:      string(xmlOut),
 		QRURL:           qrURL,
+		IdempotencyKey:  idemKey,
 	}
 	if err := s.resolver.ORDS().RegisterDocument(ctx, rec); err != nil {
 		// No abortamos: la emisión ya ocurrió. Se deja en el log del proceso.

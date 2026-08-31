@@ -23,6 +23,7 @@ CREATE TABLE document (
   retry_requested  NUMBER(1) DEFAULT 0 NOT NULL,
   retry_count      NUMBER DEFAULT 0 NOT NULL,
   last_retry_at    TIMESTAMP(6) WITH TIME ZONE,
+  idempotency_key  VARCHAR2(128),
   created_at       TIMESTAMP(6) WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
   CONSTRAINT fk_document_client FOREIGN KEY (client_id) REFERENCES client (id_client),
   CONSTRAINT uq_document_cdc    UNIQUE (cdc),
@@ -32,5 +33,11 @@ CREATE TABLE document (
 
 CREATE INDEX ix_document_client_env ON document (client_id, environment);
 CREATE INDEX ix_document_estado     ON document (client_id, estado);
+CREATE UNIQUE INDEX uq_document_idempotency
+  ON document (
+    CASE WHEN idempotency_key IS NOT NULL THEN client_id END,
+    CASE WHEN idempotency_key IS NOT NULL THEN environment END,
+    idempotency_key
+  );
 
 COMMENT ON TABLE document IS 'Cabecera de cada DE emitido. Estado: BORRADOR->FIRMADO->ENVIADO->APROBADO|RECHAZADO, CANCELADO via evento.';
