@@ -3,6 +3,7 @@
 PROMPT === document_xml metadatos ===
 
 DECLARE
+  l_schema VARCHAR2(128) := sys_context('userenv', 'current_schema');
   PROCEDURE add_col(p_sql VARCHAR2) IS
   BEGIN
     EXECUTE IMMEDIATE p_sql;
@@ -13,11 +14,32 @@ DECLARE
       END IF;
   END add_col;
 BEGIN
-  add_col('ALTER TABLE document_xml ADD (xml_sha256 VARCHAR2(64))');
-  add_col('ALTER TABLE document_xml ADD (xml_size_bytes NUMBER)');
-  add_col('ALTER TABLE document_xml ADD (xml_mime_type VARCHAR2(100) DEFAULT ''application/xml; charset=UTF-8'')');
-  add_col('ALTER TABLE document_xml ADD (xml_captured_at TIMESTAMP(6) WITH TIME ZONE)');
-  add_col('ALTER TABLE document_xml ADD (xml_availability VARCHAR2(20) DEFAULT ''MISSING'')');
+  -- Oracle bloquea ALTER TABLE con ORA-28133 mientras hay VPD sobre la tabla.
+  -- La política se repone incluso si una de las columnas no puede agregarse.
+  BEGIN
+    dbms_rls.enable_policy(l_schema, 'DOCUMENT_XML', 'VPD_DOCUMENT_XML', FALSE);
+  EXCEPTION WHEN OTHERS THEN NULL;
+  END;
+
+  BEGIN
+    add_col('ALTER TABLE document_xml ADD (xml_sha256 VARCHAR2(64))');
+    add_col('ALTER TABLE document_xml ADD (xml_size_bytes NUMBER)');
+    add_col('ALTER TABLE document_xml ADD (xml_mime_type VARCHAR2(100) DEFAULT ''application/xml; charset=UTF-8'')');
+    add_col('ALTER TABLE document_xml ADD (xml_captured_at TIMESTAMP(6) WITH TIME ZONE)');
+    add_col('ALTER TABLE document_xml ADD (xml_availability VARCHAR2(20) DEFAULT ''MISSING'')');
+  EXCEPTION
+    WHEN OTHERS THEN
+      BEGIN
+        dbms_rls.enable_policy(l_schema, 'DOCUMENT_XML', 'VPD_DOCUMENT_XML', TRUE);
+      EXCEPTION WHEN OTHERS THEN NULL;
+      END;
+      RAISE;
+  END;
+
+  BEGIN
+    dbms_rls.enable_policy(l_schema, 'DOCUMENT_XML', 'VPD_DOCUMENT_XML', TRUE);
+  EXCEPTION WHEN OTHERS THEN NULL;
+  END;
 END;
 /
 BEGIN
