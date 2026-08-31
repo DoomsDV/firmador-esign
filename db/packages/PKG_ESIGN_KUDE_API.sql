@@ -204,8 +204,10 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_kude_api AS
   END pr_store_kude;
 
   PROCEDURE pr_get_kude(p_client_id IN NUMBER, p_cdc IN VARCHAR2, p_out OUT CLOB) IS
-    l_url  VARCHAR2(1000);
-    l_data CLOB;
+    l_url    VARCHAR2(1000);
+    l_task   VARCHAR2(20);
+    l_estado VARCHAR2(20);
+    l_data   CLOB;
   BEGIN
     pkg_esign_session.set_client(p_client_id);
     BEGIN
@@ -217,9 +219,29 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_kude_api AS
         raise_application_error(pkg_esign_http.c_ora_not_found, 'documento inexistente para ese cdc');
     END;
 
+    BEGIN
+      SELECT t.status INTO l_task
+        FROM document_kude_task t
+        JOIN document d ON d.id_document = t.document_id
+       WHERE d.client_id = p_client_id AND d.cdc = p_cdc;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN l_task := NULL;
+    END;
+
+    IF l_url IS NOT NULL THEN
+      l_estado := 'ready';
+    ELSIF l_task = 'FAILED' THEN
+      l_estado := 'failed';
+    ELSIF l_task IN ('PENDING', 'PROCESSING') THEN
+      l_estado := 'pending';
+    ELSE
+      l_estado := 'pending';
+    END IF;
+
     SELECT JSON_OBJECT(
              'kude_url' VALUE l_url,
-             'estado'   VALUE CASE WHEN l_url IS NULL THEN 'pending' ELSE 'ready' END
+             'estado'   VALUE l_estado,
+             'task_status' VALUE LOWER(l_task)
              RETURNING CLOB)
       INTO l_data FROM dual;
     p_out := pkg_esign_util.fn_ok(l_data);

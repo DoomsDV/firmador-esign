@@ -27,6 +27,7 @@ PROMPT === Tablas ===
 @@tables/18_client_invitation.sql
 @@tables/19_client_kude_config.sql
 @@tables/20_document_idempotency.sql
+@@tables/21_document_kude_task.sql
 
 PROMPT === Paquete de sesion (requerido por el contexto) ===
 @@packages/PKG_ESIGN_SESSION.sql
@@ -42,6 +43,7 @@ PROMPT === Paquetes API ===
 @@packages/PKG_ESIGN_UTIL.sql
 @@packages/PKG_ESIGN_BUCKET.sql
 @@packages/PKG_ESIGN_KUDE_API.sql
+@@packages/PKG_ESIGN_KUDE_TASK_API.sql
 @@packages/PKG_ESIGN_JWT.sql
 @@packages/PKG_ESIGN_AUTH_API.sql
 @@packages/PKG_ESIGN_CLIENT_API.sql
@@ -51,6 +53,9 @@ PROMPT === Paquetes API ===
 
 PROMPT === Aplicar politicas VPD (DBMS_RLS) ===
 @@policies/03_apply_policies.sql
+
+PROMPT === Migraciones incrementales ===
+@@migrations/20260831_document_xml_artifacts_kude_task.sql
 
 PROMPT === Modulos ORDS ===
 @@ords/01_esign_module.sql

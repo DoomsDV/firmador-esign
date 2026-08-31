@@ -3,6 +3,7 @@ package tenant
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -246,6 +247,9 @@ type DocumentRecord struct {
 	ProtAut         string `json:"prot_aut"`
 	MensajeRes      string `json:"mensaje_res"`
 	XMLFirmado      string `json:"xml_firmado"`
+	XMLSHA256       string `json:"xml_sha256,omitempty"`
+	XMLSizeBytes    int    `json:"xml_size_bytes,omitempty"`
+	XMLMimeType     string `json:"xml_mime_type,omitempty"`
 	QRURL           string `json:"qr_url"`
 	FromRetry       bool   `json:"from_retry,omitempty"`
 	IdempotencyKey  string `json:"idempotency_key,omitempty"`
@@ -280,6 +284,14 @@ type IdempotencyClaim struct {
 }
 
 func (c *ORDSClient) RegisterDocument(ctx context.Context, rec DocumentRecord) error {
+	if rec.XMLFirmado != "" && rec.XMLSHA256 == "" {
+		sum := sha256.Sum256([]byte(rec.XMLFirmado))
+		rec.XMLSHA256 = hex.EncodeToString(sum[:])
+		rec.XMLSizeBytes = len(rec.XMLFirmado)
+		if rec.XMLMimeType == "" {
+			rec.XMLMimeType = "application/xml; charset=UTF-8"
+		}
+	}
 	return c.post(ctx, "documents", rec, nil)
 }
 
@@ -414,9 +426,8 @@ func (c *ORDSClient) UploadKude(ctx context.Context, clientID int, cdc string, p
 }
 
 // GetKude consulta la URL pública (bucket OCI) y el estado de generación del
-// KuDE de un documento ya emitido. estado: "pending" (aún generándose/sin
-// intentar) o "ready" (kudeURL disponible). Un cdc inexistente para ese
-// client_id devuelve *ORDSError con HTTPStatus 404.
+// KuDE de un documento ya emitido. estado: "pending" | "ready" | "failed".
+// Un cdc inexistente para ese client_id devuelve *ORDSError con HTTPStatus 404.
 func (c *ORDSClient) GetKude(ctx context.Context, clientID int, cdc string) (kudeURL, estado string, err error) {
 	var out struct {
 		KudeURL string `json:"kude_url"`
@@ -427,6 +438,97 @@ func (c *ORDSClient) GetKude(ctx context.Context, clientID int, cdc string) (kud
 		return "", "", err
 	}
 	return out.KudeURL, out.Estado, nil
+}
+
+// XMLArtifact es el XML firmado canónico + metadatos (solo APROBADO).
+type XMLArtifact struct {
+	CDC             string `json:"cdc"`
+	Estado          string `json:"estado"`
+	XMLFirmado      string `json:"xml_firmado"`
+	XMLSHA256       string `json:"xml_sha256"`
+	XMLSizeBytes    int    `json:"xml_size_bytes"`
+	XMLMimeType     string `json:"xml_mime_type"`
+	XMLCapturedAt   string `json:"xml_captured_at"`
+	XMLAvailability string `json:"xml_availability"`
+}
+
+// GetXMLArtifact obtiene el CLOB firmado y metadatos para un CDC APROBADO.
+func (c *ORDSClient) GetXMLArtifact(ctx context.Context, clientID int, cdc string) (*XMLArtifact, error) {
+	var out XMLArtifact
+	err := c.post(ctx, "documents/xml", map[string]any{"client_id": clientID, "cdc": cdc}, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// KudeTask es una tarea reclamada de la cola durable de KuDE.
+type KudeTask struct {
+	TaskID      int64  `json:"task_id"`
+	ClientID    int    `json:"client_id"`
+	DocumentID  int64  `json:"document_id"`
+	CDC         string `json:"cdc"`
+	Status      string `json:"status"`
+	Attempts    int    `json:"attempts"`
+	PayloadJSON string `json:"payload_json"`
+}
+
+// EnqueueKudeTask encola (o reencola) la generación durable del KuDE.
+// payloadJSON es el KudeData serializado; vacío conserva el payload previo.
+func (c *ORDSClient) EnqueueKudeTask(ctx context.Context, clientID int, cdc, payloadJSON string) error {
+	return c.post(ctx, "kude-task/enqueue", map[string]any{
+		"client_id":    clientID,
+		"cdc":          cdc,
+		"payload_json": payloadJSON,
+	}, nil)
+}
+
+// GetKudeConfig obtiene el branding KuDE del cliente (worker sin API key).
+func (c *ORDSClient) GetKudeConfig(ctx context.Context, clientID int) (KudeConfig, error) {
+	var out struct {
+		TemplateID      string `json:"template_id"`
+		ColorPrimario   string `json:"color_primario"`
+		LogoURL         string `json:"logo_url"`
+		NotasFooter     string `json:"notas_footer"`
+		MostrarFantasia int    `json:"mostrar_fantasia"`
+	}
+	err := c.post(ctx, "kude-config", map[string]any{"client_id": clientID}, &out)
+	if err != nil {
+		return KudeConfig{}, err
+	}
+	return KudeConfig{
+		TemplateID:      out.TemplateID,
+		ColorPrimario:   out.ColorPrimario,
+		LogoURL:         out.LogoURL,
+		NotasFooter:     out.NotasFooter,
+		MostrarFantasia: out.MostrarFantasia != 0,
+	}, nil
+}
+
+// ClaimKudeTasks reclama hasta limit tareas con lease.
+func (c *ORDSClient) ClaimKudeTasks(ctx context.Context, leaseOwner string, leaseSeconds, limit int) ([]KudeTask, error) {
+	var out []KudeTask
+	err := c.post(ctx, "kude-task/claim", map[string]any{
+		"lease_owner":   leaseOwner,
+		"lease_seconds": leaseSeconds,
+		"limit":         limit,
+	}, &out)
+	if err != nil {
+		return nil, err
+	}
+	if out == nil {
+		return []KudeTask{}, nil
+	}
+	return out, nil
+}
+
+// CompleteKudeTask marca READY (success) o reencola/FAILED (error).
+func (c *ORDSClient) CompleteKudeTask(ctx context.Context, taskID int64, success bool, errMsg string) error {
+	return c.post(ctx, "kude-task/complete", map[string]any{
+		"task_id": taskID,
+		"success": success,
+		"error":   errMsg,
+	}, nil)
 }
 
 func truncate(s string, n int) string {

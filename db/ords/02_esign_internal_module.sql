@@ -386,6 +386,181 @@ BEGIN
 END;]');
 
   ---------------------------------------------------------------------------
+  -- DOCUMENTS/XML: artefacto XML canónico + metadatos (Go / API key bridge).
+  ---------------------------------------------------------------------------
+  ords.define_template(p_module_name => 'esign_internal', p_pattern => 'documents/xml');
+  ords.define_handler(
+    p_module_name => 'esign_internal', p_pattern => 'documents/xml', p_method => 'POST',
+    p_source_type => ords.source_type_plsql,
+    p_source => q'[
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+BEGIN
+    IF NOT pkg_esign_util.fn_service_token_ok(owa_util.get_cgi_env('X-Service-Token')) THEN
+        pkg_esign_http.pr_error(
+            p_status  => pkg_esign_http.c_unauthorized,
+            p_reason  => pkg_esign_http.m_unauthorized,
+            p_code    => pkg_esign_http.e_unauthorized,
+            p_message => pkg_esign_http.msg_service_token
+        );
+        RETURN;
+    END IF;
+
+    BEGIN
+        pkg_esign_document_api.pr_get_xml_artifact(
+            p_client_id => TO_NUMBER(json_value(l_body, '$.client_id')),
+            p_cdc       => json_value(l_body, '$.cdc'),
+            p_out       => l_out
+        );
+        htp.p(l_out);
+    EXCEPTION
+        WHEN OTHERS THEN
+            IF SQLCODE = pkg_esign_http.c_ora_not_found THEN
+                pkg_esign_http.pr_error(
+                    p_status  => pkg_esign_http.c_not_found,
+                    p_reason  => pkg_esign_http.m_not_found,
+                    p_code    => pkg_esign_http.e_not_found,
+                    p_message => SQLERRM
+                );
+            ELSIF SQLCODE = pkg_esign_http.c_ora_conflict THEN
+                pkg_esign_http.pr_error(
+                    p_status  => pkg_esign_http.c_conflict,
+                    p_reason  => pkg_esign_http.m_conflict,
+                    p_code    => pkg_esign_http.e_conflict,
+                    p_message => SQLERRM
+                );
+            ELSE
+                RAISE;
+            END IF;
+    END;
+END;]');
+
+  ---------------------------------------------------------------------------
+  -- KUDE-TASK/ENQUEUE: encola generación durable de KuDE tras APROBADO.
+  ---------------------------------------------------------------------------
+  ords.define_template(p_module_name => 'esign_internal', p_pattern => 'kude-task/enqueue');
+  ords.define_handler(
+    p_module_name => 'esign_internal', p_pattern => 'kude-task/enqueue', p_method => 'POST',
+    p_source_type => ords.source_type_plsql,
+    p_source => q'[
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+BEGIN
+    IF NOT pkg_esign_util.fn_service_token_ok(owa_util.get_cgi_env('X-Service-Token')) THEN
+        pkg_esign_http.pr_error(
+            p_status  => pkg_esign_http.c_unauthorized,
+            p_reason  => pkg_esign_http.m_unauthorized,
+            p_code    => pkg_esign_http.e_unauthorized,
+            p_message => pkg_esign_http.msg_service_token
+        );
+        RETURN;
+    END IF;
+
+    pkg_esign_kude_task_api.pr_enqueue(
+        p_client_id    => TO_NUMBER(json_value(l_body, '$.client_id')),
+        p_cdc          => json_value(l_body, '$.cdc'),
+        p_payload_json => json_value(l_body, '$.payload_json' RETURNING CLOB),
+        p_out          => l_out
+    );
+    COMMIT;
+    htp.p(l_out);
+END;]');
+
+  ---------------------------------------------------------------------------
+  -- KUDE-TASK/CLAIM: worker reclama lote con lease.
+  ---------------------------------------------------------------------------
+  ords.define_template(p_module_name => 'esign_internal', p_pattern => 'kude-task/claim');
+  ords.define_handler(
+    p_module_name => 'esign_internal', p_pattern => 'kude-task/claim', p_method => 'POST',
+    p_source_type => ords.source_type_plsql,
+    p_source => q'[
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+BEGIN
+    IF NOT pkg_esign_util.fn_service_token_ok(owa_util.get_cgi_env('X-Service-Token')) THEN
+        pkg_esign_http.pr_error(
+            p_status  => pkg_esign_http.c_unauthorized,
+            p_reason  => pkg_esign_http.m_unauthorized,
+            p_code    => pkg_esign_http.e_unauthorized,
+            p_message => pkg_esign_http.msg_service_token
+        );
+        RETURN;
+    END IF;
+
+    pkg_esign_kude_task_api.pr_claim(
+        p_lease_owner   => json_value(l_body, '$.lease_owner'),
+        p_lease_seconds => NVL(TO_NUMBER(json_value(l_body, '$.lease_seconds')), 120),
+        p_limit         => NVL(TO_NUMBER(json_value(l_body, '$.limit')), 10),
+        p_out           => l_out
+    );
+    COMMIT;
+    htp.p(l_out);
+END;]');
+
+  ---------------------------------------------------------------------------
+  -- KUDE-TASK/COMPLETE: marca READY o reencola/FAILED tras intentos.
+  ---------------------------------------------------------------------------
+  ords.define_template(p_module_name => 'esign_internal', p_pattern => 'kude-task/complete');
+  ords.define_handler(
+    p_module_name => 'esign_internal', p_pattern => 'kude-task/complete', p_method => 'POST',
+    p_source_type => ords.source_type_plsql,
+    p_source => q'[
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+BEGIN
+    IF NOT pkg_esign_util.fn_service_token_ok(owa_util.get_cgi_env('X-Service-Token')) THEN
+        pkg_esign_http.pr_error(
+            p_status  => pkg_esign_http.c_unauthorized,
+            p_reason  => pkg_esign_http.m_unauthorized,
+            p_code    => pkg_esign_http.e_unauthorized,
+            p_message => pkg_esign_http.msg_service_token
+        );
+        RETURN;
+    END IF;
+
+    pkg_esign_kude_task_api.pr_complete(
+        p_task_id => TO_NUMBER(json_value(l_body, '$.task_id')),
+        p_body    => l_body,
+        p_out     => l_out
+    );
+    COMMIT;
+    htp.p(l_out);
+END;]');
+
+  ---------------------------------------------------------------------------
+  -- KUDE-CONFIG: branding por client_id (worker retry sin API key).
+  ---------------------------------------------------------------------------
+  ords.define_template(p_module_name => 'esign_internal', p_pattern => 'kude-config');
+  ords.define_handler(
+    p_module_name => 'esign_internal', p_pattern => 'kude-config', p_method => 'POST',
+    p_source_type => ords.source_type_plsql,
+    p_source => q'[
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+BEGIN
+    IF NOT pkg_esign_util.fn_service_token_ok(owa_util.get_cgi_env('X-Service-Token')) THEN
+        pkg_esign_http.pr_error(
+            p_status  => pkg_esign_http.c_unauthorized,
+            p_reason  => pkg_esign_http.m_unauthorized,
+            p_code    => pkg_esign_http.e_unauthorized,
+            p_message => pkg_esign_http.msg_service_token
+        );
+        RETURN;
+    END IF;
+
+    pkg_esign_kude_api.pr_get_config(
+        p_client_id => TO_NUMBER(json_value(l_body, '$.client_id')),
+        p_out       => l_out
+    );
+    htp.p(l_out);
+END;]');
+
+  ---------------------------------------------------------------------------
   -- CERTIFICATE/STORE: persistir P12 cifrado (mediacion Go del panel).
   ---------------------------------------------------------------------------
   ords.define_template(p_module_name => 'esign_internal', p_pattern => 'certificate/store');

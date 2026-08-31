@@ -2,9 +2,12 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,6 +18,11 @@ import (
 	"github.com/DoomsDV/firmador-e/internal/kude"
 	"github.com/DoomsDV/firmador-e/internal/sifen"
 	"github.com/DoomsDV/firmador-e/internal/tenant"
+)
+
+const (
+	persistImmediateAttempts = 3
+	persistImmediateBackoff  = 200 * time.Millisecond
 )
 
 // handleCreateDocument construye, firma y envía un DE a SIFEN (test/prod según la
@@ -74,7 +82,7 @@ func (s *Server) handleCreateDocument(w http.ResponseWriter, r *http.Request) {
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := s.resolver.ORDS().ReleaseIdempotency(releaseCtx, cfg.ClientID, cfg.EnvUpper(), idemKey); err != nil {
-			fmt.Printf("[warn] release idempotency key for client %d: %v\n", cfg.ClientID, err)
+			log.Printf("[warn] release idempotency key for client %d: %v", cfg.ClientID, err)
 		}
 	}()
 
@@ -167,7 +175,7 @@ func (s *Server) handleCreateDocument(w http.ResponseWriter, r *http.Request) {
 	s.persistDocument(ctx, cfg, build, cdc, numeroDoc, totGralOpe, qrURL, xmlOut, res, estado, idemKey)
 
 	if estado == "APROBADO" {
-		s.triggerKudeGeneration(cfg, rde, qrURL, cdc)
+		s.enqueueKudeDurable(cfg, rde, qrURL, cdc)
 	}
 
 	status := http.StatusCreated
@@ -202,9 +210,11 @@ func writeIdempotentDocument(w http.ResponseWriter, doc *tenant.IdempotencyClaim
 	})
 }
 
-// persistDocument registra el documento y su XML/QR en ORDS (best-effort: un fallo
-// de persistencia no invalida la emisión ya realizada).
+// persistDocument registra el documento y su XML/QR en ORDS con reintentos
+// inmediatos. Si falla tras los reintentos, deja señal de recovery (log CRITICAL
+// + reintento en background) sin invalidar la emisión ya realizada.
 func (s *Server) persistDocument(ctx context.Context, cfg *tenant.Config, build *buildResult, cdc string, numeroDoc int, total decimal.Decimal, qrURL string, xmlOut []byte, res sifenResult, estado, idemKey string) {
+	sum := sha256.Sum256(xmlOut)
 	rec := tenant.DocumentRecord{
 		ClientID:        cfg.ClientID,
 		Environment:     cfg.EnvUpper(),
@@ -222,13 +232,113 @@ func (s *Server) persistDocument(ctx context.Context, cfg *tenant.Config, build 
 		ProtAut:         res.ProtAut,
 		MensajeRes:      res.MsgRes,
 		XMLFirmado:      string(xmlOut),
+		XMLSHA256:       hex.EncodeToString(sum[:]),
+		XMLSizeBytes:    len(xmlOut),
+		XMLMimeType:     "application/xml; charset=UTF-8",
 		QRURL:           qrURL,
 		IdempotencyKey:  idemKey,
 	}
-	if err := s.resolver.ORDS().RegisterDocument(ctx, rec); err != nil {
-		// No abortamos: la emisión ya ocurrió. Se deja en el log del proceso.
-		fmt.Printf("[warn] register document %s: %v\n", cdc, err)
+
+	var lastErr error
+	for attempt := 1; attempt <= persistImmediateAttempts; attempt++ {
+		err := s.resolver.ORDS().RegisterDocument(ctx, rec)
+		if err == nil {
+			return
+		}
+		lastErr = err
+		log.Printf("[error] register document cdc=%s attempt=%d/%d: %v", cdc, attempt, persistImmediateAttempts, err)
+		if attempt < persistImmediateAttempts {
+			time.Sleep(persistImmediateBackoff * time.Duration(attempt))
+		}
 	}
+
+	log.Printf("[CRITICAL] persist document FAILED cdc=%s client=%d estado=%s after %d attempts: %v — recovery needed",
+		cdc, cfg.ClientID, estado, persistImmediateAttempts, lastErr)
+	_ = s.resolver.ORDS().Log(context.Background(), tenant.LogEntry{
+		ClientID:    cfg.ClientID,
+		Environment: cfg.EnvUpper(),
+		Endpoint:    "persist_document_failed:" + cdc,
+		HTTPStatus:  500,
+		LatencyMS:   0,
+	})
+
+	// Recovery durable: reintentos en background con backoff más largo.
+	go s.recoverPersistDocument(rec)
+}
+
+func (s *Server) recoverPersistDocument(rec tenant.DocumentRecord) {
+	const maxBg = 8
+	backoff := time.Second
+	for attempt := 1; attempt <= maxBg; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err := s.resolver.ORDS().RegisterDocument(ctx, rec)
+		cancel()
+		if err == nil {
+			log.Printf("[info] persist recovery OK cdc=%s attempt=%d", rec.CDC, attempt)
+			return
+		}
+		log.Printf("[error] persist recovery cdc=%s attempt=%d/%d: %v", rec.CDC, attempt, maxBg, err)
+		time.Sleep(backoff)
+		if backoff < 30*time.Second {
+			backoff *= 2
+		}
+	}
+	log.Printf("[CRITICAL] persist recovery EXHAUSTED cdc=%s — intervención manual requerida", rec.CDC)
+}
+
+// handleGetDocumentXML sirve el XML firmado canónico (bytes exactos del CLOB)
+// autenticado con API key. Solo del client_id de la key y solo si APROBADO.
+func (s *Server) handleGetDocumentXML(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	cfg := tenantFromContext(ctx)
+	cdc := r.PathValue("cdc")
+
+	art, err := s.resolver.ORDS().GetXMLArtifact(ctx, cfg.ClientID, cdc)
+	if err != nil {
+		var ordsErr *tenant.ORDSError
+		if errors.As(err, &ordsErr) {
+			switch {
+			case ordsErr.HTTPStatus == http.StatusNotFound || ordsErr.Code == "NOT_FOUND":
+				writeErr(w, http.StatusNotFound, "NOT_FOUND", "XML inexistente")
+				return
+			case ordsErr.HTTPStatus == http.StatusConflict || ordsErr.Code == "CONFLICT" ||
+				strings.Contains(strings.ToUpper(ordsErr.Message), "NO APROBADO"):
+				writeErr(w, http.StatusConflict, "NOT_APPROVED", "documento no APROBADO")
+				return
+			}
+		}
+		writeErr(w, http.StatusBadGateway, "ORDS_ERROR", err.Error())
+		return
+	}
+	if art.XMLFirmado == "" {
+		writeErr(w, http.StatusNotFound, "NOT_FOUND", "XML inexistente")
+		return
+	}
+
+	body := []byte(art.XMLFirmado)
+	sum := sha256.Sum256(body)
+	if art.CDC != cdc || art.Estado != "APROBADO" ||
+		art.XMLAvailability != "AVAILABLE" ||
+		art.XMLSHA256 == "" ||
+		!strings.EqualFold(hex.EncodeToString(sum[:]), art.XMLSHA256) ||
+		art.XMLSizeBytes != len(body) {
+		writeErr(w, http.StatusBadGateway, "XML_INTEGRITY_ERROR",
+			"el artefacto XML almacenado no supera la verificación de integridad")
+		return
+	}
+
+	mime := art.XMLMimeType
+	if mime == "" {
+		mime = "application/xml; charset=UTF-8"
+	}
+	w.Header().Set("Content-Type", mime)
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	if art.XMLSHA256 != "" {
+		w.Header().Set("X-Content-SHA256", art.XMLSHA256)
+	}
+	w.Header().Set("X-CDC", art.CDC)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
 }
 
 // handleCancelDocument emite un evento de cancelación sobre un CDC.
@@ -276,9 +386,8 @@ func (s *Server) handleCancelDocument(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetKude consulta la URL pública del KuDE (PDF) de un documento ya
-// emitido. La generación es asíncrona (goroutine disparada tras el POST
-// /v1/documents), así que puede devolver estado "pending" antes de tener
-// kudeUrl; el integrador debe reintentar (polling).
+// emitido. La generación es asíncrona vía cola durable; puede devolver
+// "pending"/"failed" antes de tener kudeUrl.
 func (s *Server) handleGetKude(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	cfg := tenantFromContext(ctx)
@@ -395,11 +504,10 @@ func eventID() int {
 	return int(time.Now().Unix() % 1000000000)
 }
 
-// triggerKudeGeneration arma los datos del KuDE en la goroutine de la request
-// (rde/*etree.Document no son concurrency-safe: no cruzan a otra goroutine) y
-// lanza el render+subida en background con contexto propio. Best-effort: un
-// fallo de Gotenberg/ORDS nunca afecta la respuesta ya enviada al cliente.
-func (s *Server) triggerKudeGeneration(cfg *tenant.Config, rde *sifen.RDE, qrURL, cdc string) {
+// enqueueKudeDurable arma KudeData en la goroutine de la request (rde no es
+// concurrency-safe) y encola la tarea durable. El worker kudequeue renderiza
+// y sube el PDF. Best-effort respecto de la respuesta HTTP ya enviada.
+func (s *Server) enqueueKudeDurable(cfg *tenant.Config, rde *sifen.RDE, qrURL, cdc string) {
 	data, err := kude.BuildKudeData(rde, qrURL, cfg.EnvUpper(), kude.Branding{
 		TemplateID:      cfg.KudeConfig.TemplateID,
 		ColorPrimario:   cfg.KudeConfig.ColorPrimario,
@@ -408,27 +516,18 @@ func (s *Server) triggerKudeGeneration(cfg *tenant.Config, rde *sifen.RDE, qrURL
 		MostrarFantasia: cfg.KudeConfig.MostrarFantasia,
 	})
 	if err != nil {
-		fmt.Printf("[warn] kude %s: armando datos: %v\n", cdc, err)
+		log.Printf("[warn] kude enqueue %s: armando datos: %v", cdc, err)
 		return
 	}
-	clientID := cfg.ClientID
+	payload, err := json.Marshal(data)
+	if err != nil {
+		log.Printf("[warn] kude enqueue %s: serializar payload: %v", cdc, err)
+		return
+	}
 
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), s.kudeTimeout)
-		defer cancel()
-
-		html, err := kude.RenderKuDEHTML(data)
-		if err != nil {
-			fmt.Printf("[warn] kude %s: renderizando HTML: %v\n", cdc, err)
-			return
-		}
-		pdf, err := s.gotenberg.Render(ctx, html)
-		if err != nil {
-			fmt.Printf("[warn] kude %s: Gotenberg: %v\n", cdc, err)
-			return
-		}
-		if _, err := s.resolver.ORDS().UploadKude(ctx, clientID, cdc, pdf); err != nil {
-			fmt.Printf("[warn] kude %s: subiendo a OCI: %v\n", cdc, err)
-		}
-	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := s.resolver.ORDS().EnqueueKudeTask(ctx, cfg.ClientID, cdc, string(payload)); err != nil {
+		log.Printf("[warn] kude enqueue %s: ORDS: %v", cdc, err)
+	}
 }

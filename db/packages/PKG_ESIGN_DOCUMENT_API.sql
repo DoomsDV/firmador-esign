@@ -9,6 +9,8 @@ CREATE OR REPLACE PACKAGE pkg_esign_document_api AS
   PROCEDURE pr_list_documents(p_client_id IN NUMBER, p_body IN CLOB, p_out OUT CLOB);
   PROCEDURE pr_get_document(p_client_id IN NUMBER, p_cdc IN VARCHAR2, p_out OUT CLOB);
   PROCEDURE pr_get_xml(p_client_id IN NUMBER, p_cdc IN VARCHAR2, p_out OUT CLOB);
+  -- Artefacto XML canónico (APROBADO) con metadatos; para Go / API key.
+  PROCEDURE pr_get_xml_artifact(p_client_id IN NUMBER, p_cdc IN VARCHAR2, p_out OUT CLOB);
 
   -- Lookup por Idempotency-Key (cliente+ambiente). Devuelve found=false si no hay match.
   PROCEDURE pr_find_by_idempotency(p_client_id IN NUMBER, p_body IN CLOB, p_out OUT CLOB);
@@ -38,6 +40,17 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
     l_doc_id document.id_document%TYPE;
     l_xml  CLOB := json_value(p_body, '$.xml_firmado' RETURNING CLOB);
     l_qr   VARCHAR2(1000) := json_value(p_body, '$.qr_url');
+    l_sha  VARCHAR2(64) := LOWER(TRIM(json_value(p_body, '$.xml_sha256')));
+    l_size NUMBER := TO_NUMBER(json_value(p_body, '$.xml_size_bytes'));
+    l_mime VARCHAR2(100) := NVL(NULLIF(TRIM(json_value(p_body, '$.xml_mime_type')), ''),
+                                'application/xml; charset=UTF-8');
+    l_exist_xml CLOB;
+    l_xml_blob BLOB;
+    l_dest_off INTEGER := 1;
+    l_src_off INTEGER := 1;
+    l_lang_ctx INTEGER := DBMS_LOB.DEFAULT_LANG_CTX;
+    l_warning INTEGER;
+    l_doc_estado document.estado%TYPE;
     l_data CLOB;
   BEGIN
     pkg_esign_session.set_client(p_client_id);
@@ -74,7 +87,8 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
        json_value(p_body, '$.prot_aut'), json_value(p_body, '$.mensaje_res'), SYSTIMESTAMP,
        NULLIF(TRIM(l_idem), ''));
 
-    SELECT id_document INTO l_doc_id FROM document WHERE client_id = p_client_id AND cdc = l_cdc;
+    SELECT id_document, estado INTO l_doc_id, l_doc_estado
+      FROM document WHERE client_id = p_client_id AND cdc = l_cdc;
 
     IF NULLIF(TRIM(l_idem), '') IS NOT NULL THEN
       MERGE /*+ no_parallel */ INTO document_idempotency i
@@ -99,13 +113,75 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
       );
     END IF;
 
+    -- XML/QR: nunca borrar xml_firmado con NULL ni tocar kude_url.
+    -- Si ya hay XML y llega otro distinto para un CDC aprobado -> CONFLICT.
     IF l_xml IS NOT NULL OR l_qr IS NOT NULL THEN
+      BEGIN
+        SELECT xml_firmado INTO l_exist_xml
+          FROM document_xml WHERE document_id = l_doc_id;
+      EXCEPTION
+        WHEN NO_DATA_FOUND THEN l_exist_xml := NULL;
+      END;
+
+      IF l_xml IS NOT NULL AND l_exist_xml IS NOT NULL
+         AND DBMS_LOB.COMPARE(l_exist_xml, l_xml) <> 0 THEN
+        IF l_doc_estado = 'APROBADO' THEN
+          raise_application_error(pkg_esign_http.c_ora_conflict,
+            'xml_firmado distinto para CDC aprobado; no se sustituye');
+        END IF;
+        -- Conservar el XML canónico ya persistido (no sobrescribir con otro distinto).
+        l_xml := NULL;
+        l_sha := NULL;
+        l_size := NULL;
+      END IF;
+
+      IF l_xml IS NOT NULL THEN
+        DBMS_LOB.CREATETEMPORARY(l_xml_blob, TRUE);
+        DBMS_LOB.CONVERTTOBLOB(
+          dest_lob     => l_xml_blob,
+          src_clob     => l_xml,
+          amount       => DBMS_LOB.LOBMAXSIZE,
+          dest_offset  => l_dest_off,
+          src_offset   => l_src_off,
+          blob_csid    => NLS_CHARSET_ID('AL32UTF8'),
+          lang_context => l_lang_ctx,
+          warning      => l_warning
+        );
+        l_sha := LOWER(RAWTOHEX(DBMS_CRYPTO.HASH(l_xml_blob, DBMS_CRYPTO.HASH_SH256)));
+        IF l_size IS NULL THEN
+          l_size := DBMS_LOB.GETLENGTH(l_xml_blob);
+        ELSIF l_size <> DBMS_LOB.GETLENGTH(l_xml_blob) THEN
+          raise_application_error(pkg_esign_http.c_ora_bad_request,
+            'xml_size_bytes no coincide con el XML firmado');
+        END IF;
+        DBMS_LOB.FREETEMPORARY(l_xml_blob);
+      END IF;
+
       MERGE /*+ no_parallel */ INTO document_xml x
       USING (SELECT l_doc_id AS did FROM dual) s
       ON (x.document_id = s.did)
-      WHEN MATCHED THEN UPDATE SET xml_firmado = l_xml, qr_url = l_qr
-      WHEN NOT MATCHED THEN INSERT (document_id, client_id, xml_firmado, qr_url)
-      VALUES (l_doc_id, p_client_id, l_xml, l_qr);
+      WHEN MATCHED THEN UPDATE SET
+        xml_firmado = NVL(l_xml, x.xml_firmado),
+        qr_url = NVL(l_qr, x.qr_url),
+        xml_sha256 = CASE WHEN l_xml IS NOT NULL THEN l_sha ELSE x.xml_sha256 END,
+        xml_size_bytes = CASE WHEN l_xml IS NOT NULL THEN l_size ELSE x.xml_size_bytes END,
+        xml_mime_type = CASE WHEN l_xml IS NOT NULL THEN l_mime ELSE x.xml_mime_type END,
+        xml_captured_at = CASE
+                            WHEN l_xml IS NOT NULL AND x.xml_firmado IS NULL THEN SYSTIMESTAMP
+                            WHEN l_xml IS NOT NULL AND x.xml_captured_at IS NULL THEN SYSTIMESTAMP
+                            ELSE x.xml_captured_at END,
+        xml_availability = CASE
+                             WHEN NVL(l_xml, x.xml_firmado) IS NOT NULL THEN 'AVAILABLE'
+                             ELSE NVL(x.xml_availability, 'MISSING') END
+      WHEN NOT MATCHED THEN INSERT (
+        document_id, client_id, xml_firmado, qr_url,
+        xml_sha256, xml_size_bytes, xml_mime_type, xml_captured_at, xml_availability
+      ) VALUES (
+        l_doc_id, p_client_id, l_xml, l_qr,
+        l_sha, l_size, l_mime,
+        CASE WHEN l_xml IS NOT NULL THEN SYSTIMESTAMP END,
+        CASE WHEN l_xml IS NOT NULL THEN 'AVAILABLE' ELSE 'MISSING' END
+      );
     END IF;
 
     SELECT JSON_OBJECT('document_id' VALUE l_doc_id, 'cdc' VALUE l_cdc RETURNING CLOB) INTO l_data FROM dual;
@@ -387,17 +463,55 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
     p_out := pkg_esign_util.fn_ok(l_data);
   END pr_get_document;
 
+  -- Panel (JWT): devuelve el CLOB crudo del XML firmado.
   PROCEDURE pr_get_xml(p_client_id IN NUMBER, p_cdc IN VARCHAR2, p_out OUT CLOB) IS
   BEGIN
     pkg_esign_session.set_client(p_client_id);
     BEGIN
       SELECT x.xml_firmado INTO p_out
         FROM document_xml x JOIN document d ON d.id_document = x.document_id
-       WHERE d.client_id = p_client_id AND d.cdc = p_cdc;
+       WHERE d.client_id = p_client_id AND d.cdc = p_cdc
+         AND x.xml_firmado IS NOT NULL;
     EXCEPTION
       WHEN NO_DATA_FOUND THEN raise_application_error(pkg_esign_http.c_ora_not_found, 'XML inexistente');
     END;
   END pr_get_xml;
+
+  -- Interno (Go / API key): metadatos + XML canónico. Requiere documento APROBADO
+  -- y xml_availability=AVAILABLE. Usado por GET /v1/documents/{cdc}/xml.
+  PROCEDURE pr_get_xml_artifact(p_client_id IN NUMBER, p_cdc IN VARCHAR2, p_out OUT CLOB) IS
+    l_data CLOB;
+  BEGIN
+    pkg_esign_session.set_client(p_client_id);
+    BEGIN
+      SELECT JSON_OBJECT(
+               'cdc' VALUE d.cdc,
+               'estado' VALUE d.estado,
+               'xml_firmado' VALUE x.xml_firmado,
+               'xml_sha256' VALUE x.xml_sha256,
+               'xml_size_bytes' VALUE x.xml_size_bytes,
+               'xml_mime_type' VALUE NVL(x.xml_mime_type, 'application/xml; charset=UTF-8'),
+               'xml_captured_at' VALUE TO_CHAR(x.xml_captured_at, 'YYYY-MM-DD"T"HH24:MI:SSTZH:TZM'),
+               'xml_availability' VALUE x.xml_availability
+               RETURNING CLOB)
+        INTO l_data
+        FROM document d
+        JOIN document_xml x ON x.document_id = d.id_document
+       WHERE d.client_id = p_client_id
+         AND d.cdc = p_cdc
+         AND x.xml_firmado IS NOT NULL;
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        raise_application_error(pkg_esign_http.c_ora_not_found, 'XML inexistente');
+    END;
+
+    IF JSON_VALUE(l_data, '$.estado') <> 'APROBADO' THEN
+      raise_application_error(pkg_esign_http.c_ora_conflict,
+        'documento no APROBADO; XML solo disponible tras autorizacion SIFEN');
+    END IF;
+
+    p_out := pkg_esign_util.fn_ok(l_data);
+  END pr_get_xml_artifact;
 
   PROCEDURE pr_request_retry(p_client_id IN NUMBER, p_cdc IN VARCHAR2, p_out OUT CLOB) IS
     l_estado document.estado%TYPE;
