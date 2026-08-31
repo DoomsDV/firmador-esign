@@ -45,3 +45,8 @@ bin/
 .cursor/plans/
 .cursor/mcp.json
 .cursor/rules/oracle-esign-dev.mdc
+# --- Python / scripts temporales ---
+__pycache__/
+*.pyc
+_tmp_*.py
+
