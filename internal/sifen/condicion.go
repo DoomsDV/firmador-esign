@@ -74,6 +74,76 @@ func CondicionCreditoCuotas(nCuotas int, cuotas []GCuota, entregaInicial *decima
 	return cond, nil
 }
 
+// PagoTarjetaCreditoPYG arma gPaConEIni con iTiPago=3 (Tarjeta de crédito)
+// e incluye gPagTarCD (denominación genérica / POS) exigido en homologación.
+func PagoTarjetaCreditoPYG(monto decimal.Decimal) GPaConEIni {
+	return GPaConEIni{
+		ITiPago:     3,
+		DDesTiPag:   "Tarjeta de crédito",
+		DMonTiPag:   monto,
+		CMoneTiPag:  "PYG",
+		DDMoneTiPag: "Guarani",
+		GPagTarCD: &GPagTarCD{
+			IDenTarj:    99, // Otra
+			DDesDenTarj: "Otra",
+			IForProPa:   1, // POS
+		},
+	}
+}
+
+// CatalogoDesTiPago devuelve la descripción oficial del catálogo SIFEN para iTiPago.
+// String vacío = código desconocido / sin descripción válida.
+func CatalogoDesTiPago(iTiPago int) string {
+	switch iTiPago {
+	case 1:
+		return "Efectivo"
+	case 2:
+		return "Cheque"
+	case 3:
+		return "Tarjeta de crédito"
+	case 4:
+		return "Tarjeta de débito"
+	case 5:
+		return "Transferencia"
+	case 6:
+		return "Giro"
+	case 7:
+		return "Billetera electrónica"
+	case 8:
+		return "Tarjeta empresarial"
+	case 9:
+		return "Vale"
+	case 10:
+		return "Retención"
+	case 11:
+		return "Pago por anticipo"
+	case 12:
+		return "Valor comercial"
+	case 13:
+		return "Compensación"
+	case 14:
+		return "Permuta"
+	case 15:
+		return "Pago bancario"
+	case 16:
+		return "Pago móvil"
+	case 17:
+		return "Donación"
+	case 18:
+		return "Promoción"
+	case 19:
+		return "Consumo interno"
+	case 20:
+		return "Pago electrónico"
+	case 21:
+		return "Cobro via tarjeta"
+	case 99:
+		return "Otro"
+	default:
+		return ""
+	}
+}
+
 // PagoEfectivoPYG ayuda rápida para gPaConEIni en contado/entrega.
 func PagoEfectivoPYG(monto decimal.Decimal) GPaConEIni {
 	return GPaConEIni{
