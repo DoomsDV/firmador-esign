@@ -34,12 +34,12 @@ func TestRegisterDocumentIncludesXMLAndHash(t *testing.T) {
 
 	client := NewORDSClient(server.URL, "tok")
 	err := client.RegisterDocument(t.Context(), DocumentRecord{
-		ClientID:   7,
+		ClientID:    7,
 		Environment: "TEST",
-		CDC:        "CDC123",
-		Estado:     "APROBADO",
-		XMLFirmado: xmlBody,
-		QRURL:      "https://example.test/qr",
+		CDC:         "CDC123",
+		Estado:      "APROBADO",
+		XMLFirmado:  xmlBody,
+		QRURL:       "https://example.test/qr",
 	})
 	if err != nil {
 		t.Fatalf("RegisterDocument: %v", err)
@@ -89,5 +89,38 @@ func TestEnqueueKudeTaskPayload(t *testing.T) {
 	}
 	if got["payload_json"] != payload {
 		t.Fatalf("payload_json = %v", got["payload_json"])
+	}
+}
+
+func TestListPendingRetrySendsServiceTokenAndPropagatesUnauthorized(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/v1/documents/pending-retry" {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.Header.Get("X-Service-Token"); got != "expected-token" {
+			t.Errorf("X-Service-Token = %q, want %q", got, "expected-token")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": false,
+			"error": map[string]string{
+				"code":    "UNAUTHORIZED",
+				"message": "service token invalido",
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewORDSClient(server.URL, "expected-token")
+	_, err := client.ListPendingRetry(t.Context(), "all", 1)
+	if err == nil {
+		t.Fatal("ListPendingRetry returned nil error for HTTP 401")
+	}
+	if !strings.Contains(err.Error(), "401") {
+		t.Fatalf("ListPendingRetry error = %q, want HTTP 401 context", err)
 	}
 }

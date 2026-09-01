@@ -1,5 +1,6 @@
--- Modulo ORDS 'esign_internal' (/internal/v1/) para el servicio Go. Cada handler valida el
--- header X-Service-Token contra app_parameter.SERVICE_TOKEN antes de tocar los paquetes. La
+-- Modulo ORDS 'esign_internal' (/internal/v1/) para el servicio Go. Cada handler recibe el
+-- header X-Service-Token por binding ORDS :service_token y lo valida contra
+-- app_parameter.SERVICE_TOKEN antes de tocar los paquetes. La
 -- API key del comercio (en el body) resuelve el client_id + environment (pr_resolve_key).
 -- Convenciones de los handlers:
 --   * El cuerpo se lee UNA sola vez en l_body := :body_text (CLOB); :body es BLOB y no liga
@@ -34,7 +35,8 @@ DECLARE
     l_env    VARCHAR2(4);
     l_status VARCHAR2(20);
 BEGIN
-    IF NOT pkg_esign_util.fn_service_token_ok(owa_util.get_cgi_env('X-Service-Token')) THEN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
         pkg_esign_http.pr_error(
             p_status  => pkg_esign_http.c_unauthorized,
             p_reason  => pkg_esign_http.m_unauthorized,
@@ -52,6 +54,7 @@ BEGIN
     );
 
     IF l_status <> 'ACTIVE' THEN
+        :status_code := pkg_esign_http.c_forbidden;
         pkg_esign_http.pr_error(
             p_status  => pkg_esign_http.c_forbidden,
             p_reason  => pkg_esign_http.m_forbidden,
@@ -82,7 +85,8 @@ DECLARE
     l_num  NUMBER;
     l_data CLOB;
 BEGIN
-    IF NOT pkg_esign_util.fn_service_token_ok(owa_util.get_cgi_env('X-Service-Token')) THEN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
         pkg_esign_http.pr_error(
             p_status  => pkg_esign_http.c_unauthorized,
             p_reason  => pkg_esign_http.m_unauthorized,
@@ -119,7 +123,8 @@ DECLARE
     l_body CLOB := :body_text;
     l_out  CLOB;
 BEGIN
-    IF NOT pkg_esign_util.fn_service_token_ok(owa_util.get_cgi_env('X-Service-Token')) THEN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
         pkg_esign_http.pr_error(
             p_status  => pkg_esign_http.c_unauthorized,
             p_reason  => pkg_esign_http.m_unauthorized,
@@ -148,7 +153,8 @@ DECLARE
     l_body CLOB := :body_text;
     l_out  CLOB;
 BEGIN
-    IF NOT pkg_esign_util.fn_service_token_ok(owa_util.get_cgi_env('X-Service-Token')) THEN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
         pkg_esign_http.pr_error(
             p_status  => pkg_esign_http.c_unauthorized,
             p_reason  => pkg_esign_http.m_unauthorized,
@@ -178,7 +184,8 @@ DECLARE
     l_body CLOB := :body_text;
     l_out  CLOB;
 BEGIN
-    IF NOT pkg_esign_util.fn_service_token_ok(owa_util.get_cgi_env('X-Service-Token')) THEN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
         pkg_esign_http.pr_error(
             p_status  => pkg_esign_http.c_unauthorized,
             p_reason  => pkg_esign_http.m_unauthorized,
@@ -210,7 +217,8 @@ DECLARE
     l_body CLOB := :body_text;
     l_out  CLOB;
 BEGIN
-    IF NOT pkg_esign_util.fn_service_token_ok(owa_util.get_cgi_env('X-Service-Token')) THEN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
         pkg_esign_http.pr_error(
             p_status  => pkg_esign_http.c_unauthorized,
             p_reason  => pkg_esign_http.m_unauthorized,
@@ -242,7 +250,8 @@ DECLARE
     l_body CLOB := :body_text;
     l_out  CLOB;
 BEGIN
-    IF NOT pkg_esign_util.fn_service_token_ok(owa_util.get_cgi_env('X-Service-Token')) THEN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
         pkg_esign_http.pr_error(
             p_status  => pkg_esign_http.c_unauthorized,
             p_reason  => pkg_esign_http.m_unauthorized,
@@ -273,7 +282,8 @@ DECLARE
     l_body CLOB := :body_text;
     l_out  CLOB;
 BEGIN
-    IF NOT pkg_esign_util.fn_service_token_ok(owa_util.get_cgi_env('X-Service-Token')) THEN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
         pkg_esign_http.pr_error(
             p_status  => pkg_esign_http.c_unauthorized,
             p_reason  => pkg_esign_http.m_unauthorized,
@@ -303,7 +313,8 @@ DECLARE
     l_body CLOB := :body_text;
     l_out  CLOB;
 BEGIN
-    IF NOT pkg_esign_util.fn_service_token_ok(owa_util.get_cgi_env('X-Service-Token')) THEN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
         pkg_esign_http.pr_error(
             p_status  => pkg_esign_http.c_unauthorized,
             p_reason  => pkg_esign_http.m_unauthorized,
@@ -337,7 +348,8 @@ DECLARE
     l_body CLOB := :body_text;
     l_out  CLOB;
 BEGIN
-    IF NOT pkg_esign_util.fn_service_token_ok(owa_util.get_cgi_env('X-Service-Token')) THEN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
         pkg_esign_http.pr_error(
             p_status  => pkg_esign_http.c_unauthorized,
             p_reason  => pkg_esign_http.m_unauthorized,
@@ -367,7 +379,8 @@ DECLARE
     l_body CLOB := :body_text;
     l_out  CLOB;
 BEGIN
-    IF NOT pkg_esign_util.fn_service_token_ok(owa_util.get_cgi_env('X-Service-Token')) THEN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
         pkg_esign_http.pr_error(
             p_status  => pkg_esign_http.c_unauthorized,
             p_reason  => pkg_esign_http.m_unauthorized,
@@ -397,7 +410,8 @@ DECLARE
     l_body CLOB := :body_text;
     l_out  CLOB;
 BEGIN
-    IF NOT pkg_esign_util.fn_service_token_ok(owa_util.get_cgi_env('X-Service-Token')) THEN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
         pkg_esign_http.pr_error(
             p_status  => pkg_esign_http.c_unauthorized,
             p_reason  => pkg_esign_http.m_unauthorized,
@@ -417,6 +431,7 @@ BEGIN
     EXCEPTION
         WHEN OTHERS THEN
             IF SQLCODE = pkg_esign_http.c_ora_not_found THEN
+                :status_code := pkg_esign_http.c_not_found;
                 pkg_esign_http.pr_error(
                     p_status  => pkg_esign_http.c_not_found,
                     p_reason  => pkg_esign_http.m_not_found,
@@ -424,6 +439,7 @@ BEGIN
                     p_message => SQLERRM
                 );
             ELSIF SQLCODE = pkg_esign_http.c_ora_conflict THEN
+                :status_code := pkg_esign_http.c_conflict;
                 pkg_esign_http.pr_error(
                     p_status  => pkg_esign_http.c_conflict,
                     p_reason  => pkg_esign_http.m_conflict,
@@ -448,7 +464,8 @@ DECLARE
     l_body CLOB := :body_text;
     l_out  CLOB;
 BEGIN
-    IF NOT pkg_esign_util.fn_service_token_ok(owa_util.get_cgi_env('X-Service-Token')) THEN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
         pkg_esign_http.pr_error(
             p_status  => pkg_esign_http.c_unauthorized,
             p_reason  => pkg_esign_http.m_unauthorized,
@@ -480,7 +497,8 @@ DECLARE
     l_body CLOB := :body_text;
     l_out  CLOB;
 BEGIN
-    IF NOT pkg_esign_util.fn_service_token_ok(owa_util.get_cgi_env('X-Service-Token')) THEN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
         pkg_esign_http.pr_error(
             p_status  => pkg_esign_http.c_unauthorized,
             p_reason  => pkg_esign_http.m_unauthorized,
@@ -512,7 +530,8 @@ DECLARE
     l_body CLOB := :body_text;
     l_out  CLOB;
 BEGIN
-    IF NOT pkg_esign_util.fn_service_token_ok(owa_util.get_cgi_env('X-Service-Token')) THEN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
         pkg_esign_http.pr_error(
             p_status  => pkg_esign_http.c_unauthorized,
             p_reason  => pkg_esign_http.m_unauthorized,
@@ -543,7 +562,8 @@ DECLARE
     l_body CLOB := :body_text;
     l_out  CLOB;
 BEGIN
-    IF NOT pkg_esign_util.fn_service_token_ok(owa_util.get_cgi_env('X-Service-Token')) THEN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
         pkg_esign_http.pr_error(
             p_status  => pkg_esign_http.c_unauthorized,
             p_reason  => pkg_esign_http.m_unauthorized,
@@ -572,7 +592,8 @@ DECLARE
     l_body CLOB := :body_text;
     l_out  CLOB;
 BEGIN
-    IF NOT pkg_esign_util.fn_service_token_ok(owa_util.get_cgi_env('X-Service-Token')) THEN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
         pkg_esign_http.pr_error(
             p_status  => pkg_esign_http.c_unauthorized,
             p_reason  => pkg_esign_http.m_unauthorized,
@@ -604,7 +625,8 @@ DECLARE
     l_body CLOB := :body_text;
     l_out  CLOB;
 BEGIN
-    IF NOT pkg_esign_util.fn_service_token_ok(owa_util.get_cgi_env('X-Service-Token')) THEN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
         pkg_esign_http.pr_error(
             p_status  => pkg_esign_http.c_unauthorized,
             p_reason  => pkg_esign_http.m_unauthorized,
@@ -636,7 +658,8 @@ DECLARE
     l_body CLOB := :body_text;
     l_out  CLOB;
 BEGIN
-    IF NOT pkg_esign_util.fn_service_token_ok(owa_util.get_cgi_env('X-Service-Token')) THEN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
         pkg_esign_http.pr_error(
             p_status  => pkg_esign_http.c_unauthorized,
             p_reason  => pkg_esign_http.m_unauthorized,
@@ -666,7 +689,8 @@ END;]');
 DECLARE
     l_body CLOB := :body_text;
 BEGIN
-    IF NOT pkg_esign_util.fn_service_token_ok(owa_util.get_cgi_env('X-Service-Token')) THEN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
         pkg_esign_http.pr_error(
             p_status  => pkg_esign_http.c_unauthorized,
             p_reason  => pkg_esign_http.m_unauthorized,
@@ -686,6 +710,29 @@ BEGIN
     COMMIT;
     htp.p(pkg_esign_util.fn_ok());
 END;]');
+
+  -- ORDS no garantiza que los headers custom esten en el CGI de OWA. Declararlos
+  -- como parametros de entrada entrega X-Service-Token a :service_token de cada
+  -- handler y permite conservar el contrato interno sin exponerlo en el body.
+  FOR r IN (
+    SELECT t.uri_template, h.method
+      FROM user_ords_modules m
+      JOIN user_ords_templates t ON t.module_id = m.id
+      JOIN user_ords_handlers h ON h.template_id = t.id
+     WHERE m.name = 'esign_internal'
+  ) LOOP
+    ords.define_parameter(
+      p_module_name        => 'esign_internal',
+      p_pattern            => r.uri_template,
+      p_method             => r.method,
+      p_name               => 'X-Service-Token',
+      p_bind_variable_name => 'service_token',
+      p_source_type        => 'HEADER',
+      p_param_type         => 'STRING',
+      p_access_method      => 'IN',
+      p_comments           => 'Token compartido Go<->ORDS'
+    );
+  END LOOP;
 
   COMMIT;
 END;
