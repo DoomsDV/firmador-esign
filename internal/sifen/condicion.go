@@ -118,25 +118,25 @@ func CatalogoDesTiPago(iTiPago int) string {
 	case 11:
 		return "Pago por anticipo"
 	case 12:
-		return "Valor comercial"
+		return "Valor fiscal"
 	case 13:
-		return "Compensación"
+		return "Valor comercial"
 	case 14:
-		return "Permuta"
+		return "Compensación"
 	case 15:
-		return "Pago bancario"
+		return "Permuta"
 	case 16:
-		return "Pago móvil"
+		return "Pago bancario"
 	case 17:
-		return "Donación"
+		return "Pago móvil"
 	case 18:
-		return "Promoción"
+		return "Donación"
 	case 19:
-		return "Consumo interno"
+		return "Promoción"
 	case 20:
-		return "Pago electrónico"
+		return "Consumo interno"
 	case 21:
-		return "Cobro via tarjeta"
+		return "Pago electrónico"
 	case 99:
 		return "Otro"
 	default:

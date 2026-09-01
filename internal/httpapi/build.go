@@ -114,8 +114,12 @@ func buildDocumentInput(cfg *tenant.Config, req *createDocumentRequest, op *oper
 		desIndPres = "Operación presencial"
 	} else if desIndPres == "" {
 		switch indPres {
+		case 2:
+			desIndPres = "Operación electrónica"
 		case 3:
-			desIndPres = "Operación electrónica (venta a distancia, internet, etc.)"
+			desIndPres = "Operación telemarketing"
+		case 4:
+			desIndPres = "Venta a domicilio"
 		default:
 			desIndPres = "Operación presencial"
 		}
