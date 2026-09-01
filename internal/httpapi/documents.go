@@ -49,10 +49,26 @@ func (s *Server) handleCreateDocument(w http.ResponseWriter, r *http.Request) {
 	}
 
 	claimed := false
-	sendStarted := false
+	durableEmissionStarted := false
 	if idemKey != "" {
-		claim, err := s.resolver.ORDS().ClaimIdempotency(ctx, cfg.ClientID, cfg.EnvUpper(), idemKey)
+		requestSHA256, err := hashCreateDocumentRequest(req)
 		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "IDEMPOTENCY_ERROR", "no se pudo resumir la solicitud: "+err.Error())
+			return
+		}
+		claim, err := s.resolver.ORDS().ClaimIdempotency(
+			ctx,
+			cfg.ClientID,
+			cfg.EnvUpper(),
+			idemKey,
+			requestSHA256,
+		)
+		if err != nil {
+			var ordsErr *tenant.ORDSError
+			if errors.As(err, &ordsErr) && ordsErr.HTTPStatus == http.StatusConflict {
+				writeErr(w, http.StatusConflict, "IDEMPOTENCY_KEY_REUSED", ordsErr.Message)
+				return
+			}
 			writeErr(w, http.StatusBadGateway, "IDEMPOTENCY_ERROR", "no se pudo reclamar Idempotency-Key: "+err.Error())
 			return
 		}
@@ -76,7 +92,7 @@ func (s *Server) handleCreateDocument(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	defer func() {
-		if !claimed || sendStarted {
+		if !claimed || durableEmissionStarted {
 			return
 		}
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -152,6 +168,29 @@ func (s *Server) handleCreateDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Antes de hablar con SIFEN, persistimos el DE firmado exacto. Así una
+	// caída o timeout posterior solo puede reenviar estos mismos bytes, nunca
+	// construir un CDC nuevo para la misma Idempotency-Key.
+	preRecord := s.newDocumentRecord(
+		cfg,
+		build,
+		cdc,
+		numeroDoc,
+		totGralOpe,
+		qrURL,
+		xmlOut,
+		sifenResult{},
+		"FIRMADO",
+		idemKey,
+		false,
+	)
+	if err := s.persistDocument(ctx, preRecord, false); err != nil {
+		writeErr(w, http.StatusBadGateway, "PERSISTENCE_ERROR",
+			"no se pudo registrar el DE firmado antes de enviarlo a SIFEN: "+err.Error())
+		return
+	}
+	durableEmissionStarted = true
+
 	// Envío síncrono a SIFEN.
 	syncURL := sifen.EndpointsFor(cfg.Environment).WsSync
 	client, err := sifen.NewClientFromP12Bytes(cfg.Environment, cert.P12, cert.Password, syncURL)
@@ -161,24 +200,39 @@ func (s *Server) handleCreateDocument(w http.ResponseWriter, r *http.Request) {
 	}
 	sendCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	sendStarted = true
 	code, body, err := client.RecibirDESync(sendCtx, int64(numeroDoc), xmlOut)
 	if err != nil {
-		// El DE quedó firmado pero no se pudo enviar: se registra como FIRMADO.
-		s.persistDocument(ctx, cfg, build, cdc, numeroDoc, totGralOpe, qrURL, xmlOut, sifenResult{}, "FIRMADO", idemKey)
+		// El DE ya está durable. Lo marcamos para reenvío del XML canónico;
+		// si ORDS también falla, la recuperación de fondo usa el mismo record.
+		failedRecord := preRecord
+		failedRecord.RetryRequested = true
+		if persistErr := s.persistDocument(ctx, failedRecord, true); persistErr != nil {
+			log.Printf("[CRITICAL] persistir reintento SIFEN cdc=%s: %v", cdc, persistErr)
+		}
 		writeErr(w, http.StatusBadGateway, "SEND_ERROR", "firmado pero no enviado a SIFEN: "+err.Error())
 		return
 	}
 
 	res := parseSifenResult(body)
 	estado := estadoDE(res.CodRes)
-	s.persistDocument(ctx, cfg, build, cdc, numeroDoc, totGralOpe, qrURL, xmlOut, res, estado, idemKey)
+	finalRecord := preRecord
+	finalRecord.Estado = estado
+	finalRecord.CodRes = res.CodRes
+	finalRecord.ProtAut = res.ProtAut
+	finalRecord.MensajeRes = res.MsgRes
+	persistErr := s.persistDocument(ctx, finalRecord, true)
 
-	if estado == "APROBADO" {
+	if estado == "APROBADO" && persistErr == nil {
 		s.enqueueKudeDurable(cfg, rde, qrURL, cdc)
 	}
 
 	status := http.StatusCreated
+	if persistErr != nil {
+		// SIFEN ya respondió, pero la persistencia local quedó a recuperar.
+		// 202 permite que el bridge conserve CDC sin presentar el flujo como
+		// completamente durable.
+		status = http.StatusAccepted
+	}
 	if estado != "APROBADO" {
 		status = http.StatusOK // rechazado por SIFEN: 200 con el detalle en data
 	}
@@ -210,12 +264,29 @@ func writeIdempotentDocument(w http.ResponseWriter, doc *tenant.IdempotencyClaim
 	})
 }
 
-// persistDocument registra el documento y su XML/QR en ORDS con reintentos
-// inmediatos. Si falla tras los reintentos, deja señal de recovery (log CRITICAL
-// + reintento en background) sin invalidar la emisión ya realizada.
-func (s *Server) persistDocument(ctx context.Context, cfg *tenant.Config, build *buildResult, cdc string, numeroDoc int, total decimal.Decimal, qrURL string, xmlOut []byte, res sifenResult, estado, idemKey string) {
+func hashCreateDocumentRequest(req createDocumentRequest) (string, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return "", fmt.Errorf("serializar solicitud: %w", err)
+	}
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func (s *Server) newDocumentRecord(
+	cfg *tenant.Config,
+	build *buildResult,
+	cdc string,
+	numeroDoc int,
+	total decimal.Decimal,
+	qrURL string,
+	xmlOut []byte,
+	res sifenResult,
+	estado, idemKey string,
+	retryRequested bool,
+) tenant.DocumentRecord {
 	sum := sha256.Sum256(xmlOut)
-	rec := tenant.DocumentRecord{
+	return tenant.DocumentRecord{
 		ClientID:        cfg.ClientID,
 		Environment:     cfg.EnvUpper(),
 		TipoDE:          build.TipoDE,
@@ -236,34 +307,46 @@ func (s *Server) persistDocument(ctx context.Context, cfg *tenant.Config, build 
 		XMLSizeBytes:    len(xmlOut),
 		XMLMimeType:     "application/xml; charset=UTF-8",
 		QRURL:           qrURL,
+		RetryRequested:  retryRequested,
 		IdempotencyKey:  idemKey,
 	}
+}
 
+// persistDocument registra un documento con reintentos inmediatos. Cuando un
+// resultado SIFEN ya ocurrió, agenda recuperación con el mismo XML canónico.
+func (s *Server) persistDocument(ctx context.Context, rec tenant.DocumentRecord, recoverOnFailure bool) error {
 	var lastErr error
 	for attempt := 1; attempt <= persistImmediateAttempts; attempt++ {
 		err := s.resolver.ORDS().RegisterDocument(ctx, rec)
 		if err == nil {
-			return
+			return nil
 		}
 		lastErr = err
-		log.Printf("[error] register document cdc=%s attempt=%d/%d: %v", cdc, attempt, persistImmediateAttempts, err)
+		log.Printf("[error] register document cdc=%s attempt=%d/%d: %v",
+			rec.CDC, attempt, persistImmediateAttempts, err)
 		if attempt < persistImmediateAttempts {
 			time.Sleep(persistImmediateBackoff * time.Duration(attempt))
 		}
 	}
 
+	if !recoverOnFailure {
+		return fmt.Errorf("registrar documento cdc=%s: %w", rec.CDC, lastErr)
+	}
+
 	log.Printf("[CRITICAL] persist document FAILED cdc=%s client=%d estado=%s after %d attempts: %v — recovery needed",
-		cdc, cfg.ClientID, estado, persistImmediateAttempts, lastErr)
+		rec.CDC, rec.ClientID, rec.Estado, persistImmediateAttempts, lastErr)
 	_ = s.resolver.ORDS().Log(context.Background(), tenant.LogEntry{
-		ClientID:    cfg.ClientID,
-		Environment: cfg.EnvUpper(),
-		Endpoint:    "persist_document_failed:" + cdc,
+		ClientID:    rec.ClientID,
+		Environment: rec.Environment,
+		Endpoint:    "persist_document_failed:" + rec.CDC,
 		HTTPStatus:  500,
 		LatencyMS:   0,
 	})
 
-	// Recovery durable: reintentos en background con backoff más largo.
+	// La goroutine acelera la recuperación; si el proceso cae, el DE FIRMADO
+	// durable queda elegible para el worker de retry y no se pierde el CDC.
 	go s.recoverPersistDocument(rec)
+	return fmt.Errorf("registrar documento cdc=%s: %w", rec.CDC, lastErr)
 }
 
 func (s *Server) recoverPersistDocument(rec tenant.DocumentRecord) {

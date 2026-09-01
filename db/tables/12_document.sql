@@ -23,12 +23,16 @@ CREATE TABLE document (
   retry_requested  NUMBER(1) DEFAULT 0 NOT NULL,
   retry_count      NUMBER DEFAULT 0 NOT NULL,
   last_retry_at    TIMESTAMP(6) WITH TIME ZONE,
+  recovery_required NUMBER(1) DEFAULT 0 NOT NULL,
+  recovery_reason   VARCHAR2(500),
+  recovery_marked_at TIMESTAMP(6) WITH TIME ZONE,
   idempotency_key  VARCHAR2(128),
   created_at       TIMESTAMP(6) WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
   CONSTRAINT fk_document_client FOREIGN KEY (client_id) REFERENCES client (id_client),
   CONSTRAINT uq_document_cdc    UNIQUE (cdc),
   CONSTRAINT ck_document_env    CHECK (environment IN ('TEST','PROD')),
-  CONSTRAINT ck_document_estado CHECK (estado IN ('BORRADOR','FIRMADO','ENVIADO','APROBADO','RECHAZADO','CANCELADO'))
+  CONSTRAINT ck_document_estado CHECK (estado IN ('BORRADOR','FIRMADO','ENVIADO','APROBADO','RECHAZADO','CANCELADO')),
+  CONSTRAINT ck_document_recovery_required CHECK (recovery_required IN (0, 1))
 );
 
 CREATE INDEX ix_document_client_env ON document (client_id, environment);

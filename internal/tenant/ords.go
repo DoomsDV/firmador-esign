@@ -133,15 +133,15 @@ type contextResponse struct {
 		} `json:"actividades"`
 	} `json:"emisor"`
 	Establecimientos []struct {
-		Codigo       string  `json:"codigo"`
-		Denominacion string  `json:"denominacion"`
-		Direccion    string  `json:"direccion"`
-		NumCasa      string  `json:"num_casa"`
-		Dep          geoJSON `json:"dep"`
-		Dis          geoJSON `json:"dis"`
-		Ciu          geoJSON `json:"ciu"`
-		Telefono     string  `json:"telefono"`
-		Email        string  `json:"email"`
+		Codigo       string   `json:"codigo"`
+		Denominacion string   `json:"denominacion"`
+		Direccion    string   `json:"direccion"`
+		NumCasa      string   `json:"num_casa"`
+		Dep          geoJSON  `json:"dep"`
+		Dis          geoJSON  `json:"dis"`
+		Ciu          geoJSON  `json:"ciu"`
+		Telefono     string   `json:"telefono"`
+		Email        string   `json:"email"`
 		Puntos       []string `json:"puntos"`
 	} `json:"establecimientos"`
 	SifenEnv *struct {
@@ -252,6 +252,7 @@ type DocumentRecord struct {
 	XMLMimeType     string `json:"xml_mime_type,omitempty"`
 	QRURL           string `json:"qr_url"`
 	FromRetry       bool   `json:"from_retry,omitempty"`
+	RetryRequested  bool   `json:"retry_requested,omitempty"`
 	IdempotencyKey  string `json:"idempotency_key,omitempty"`
 }
 
@@ -265,6 +266,7 @@ type IdempotentDocument struct {
 	NumeroDocumento string `json:"num_documento"`
 	Ambiente        string `json:"ambiente"`
 	QRURL           string `json:"qr_url"`
+	Phase           string `json:"phase"`
 	Found           bool   `json:"found"`
 }
 
@@ -295,14 +297,19 @@ func (c *ORDSClient) RegisterDocument(ctx context.Context, rec DocumentRecord) e
 	return c.post(ctx, "documents", rec, nil)
 }
 
-// ClaimIdempotency reclama una clave antes de la emisión. Solo ACQUIRED permite
-// seguir con la construcción, firma y envío a SIFEN.
-func (c *ORDSClient) ClaimIdempotency(ctx context.Context, clientID int, env, key string) (*IdempotencyClaim, error) {
+// ClaimIdempotency reclama una clave antes de la emisión. requestSHA256 vincula
+// la clave con el payload normalizado y evita reutilizarla para otro documento.
+func (c *ORDSClient) ClaimIdempotency(
+	ctx context.Context,
+	clientID int,
+	env, key, requestSHA256 string,
+) (*IdempotencyClaim, error) {
 	var out IdempotencyClaim
 	err := c.post(ctx, "documents/idempotency/claim", map[string]any{
 		"client_id":       clientID,
 		"environment":     env,
 		"idempotency_key": key,
+		"request_sha256":  requestSHA256,
 	}, &out)
 	if err != nil {
 		return nil, err
@@ -335,21 +342,22 @@ func (c *ORDSClient) FindByIdempotencyKey(ctx context.Context, clientID int, env
 
 // PendingRetryDoc es un DE FIRMADO listo para reenvio (XML ya firmado).
 type PendingRetryDoc struct {
-	CDC             string  `json:"cdc"`
-	ClientID        int     `json:"client_id"`
-	Environment     string  `json:"environment"`
-	Establecimiento string  `json:"establecimiento"`
-	PuntoExpedicion string  `json:"punto_expedicion"`
-	NumDocumento    string  `json:"num_documento"`
-	TipoDE          int     `json:"tipo_de"`
-	RetryRequested  int     `json:"retry_requested"`
-	RetryCount      int     `json:"retry_count"`
-	ReceptorNombre  string  `json:"receptor_nombre"`
-	ReceptorDoc     string  `json:"receptor_doc"`
-	Moneda          string  `json:"moneda"`
+	CDC             string   `json:"cdc"`
+	ClientID        int      `json:"client_id"`
+	Environment     string   `json:"environment"`
+	Establecimiento string   `json:"establecimiento"`
+	PuntoExpedicion string   `json:"punto_expedicion"`
+	NumDocumento    string   `json:"num_documento"`
+	TipoDE          int      `json:"tipo_de"`
+	RetryRequested  int      `json:"retry_requested"`
+	RetryCount      int      `json:"retry_count"`
+	ReceptorNombre  string   `json:"receptor_nombre"`
+	ReceptorDoc     string   `json:"receptor_doc"`
+	Moneda          string   `json:"moneda"`
 	TotalOperacion  *float64 `json:"total_operacion"`
-	QRURL           string  `json:"qr_url"`
-	XMLFirmado      string  `json:"xml_firmado"`
+	QRURL           string   `json:"qr_url"`
+	XMLFirmado      string   `json:"xml_firmado"`
+	IdempotencyKey  string   `json:"idempotency_key"`
 }
 
 // ListPendingRetry pide documentos FIRMADO pendientes. mode: "flagged" | "all".
@@ -366,6 +374,20 @@ func (c *ORDSClient) ListPendingRetry(ctx context.Context, mode string, limit in
 		return []PendingRetryDoc{}, nil
 	}
 	return out, nil
+}
+
+// MarkRetryReconciliationRequired detiene la reemisión automática de un DE
+// FIRMADO cuando se agotaron los intentos y deja evidencia para conciliación.
+func (c *ORDSClient) MarkRetryReconciliationRequired(
+	ctx context.Context,
+	clientID int,
+	cdc, reason string,
+) error {
+	return c.post(ctx, "documents/retry/reconciliation", map[string]any{
+		"client_id": clientID,
+		"cdc":       cdc,
+		"reason":    reason,
+	}, nil)
 }
 
 // StoreCertificate persiste un certificado YA cifrado (hex) vía ORDS interno.
@@ -471,6 +493,33 @@ type KudeTask struct {
 	Status      string `json:"status"`
 	Attempts    int    `json:"attempts"`
 	PayloadJSON string `json:"payload_json"`
+}
+
+// KudeRecoveryDocument es un DE APROBADO con XML/QR persistidos al que aún no
+// se le creó una tarea durable de KuDE.
+type KudeRecoveryDocument struct {
+	ClientID    int    `json:"client_id"`
+	CDC         string `json:"cdc"`
+	Environment string `json:"environment"`
+	XMLFirmado  string `json:"xml_firmado"`
+	QRURL       string `json:"qr_url"`
+}
+
+// ListKudeRecoveryDocuments devuelve documentos aprobados sin tarea KuDE para
+// que el worker reconstruya el payload a partir del XML firmado canónico.
+func (c *ORDSClient) ListKudeRecoveryDocuments(
+	ctx context.Context,
+	limit int,
+) ([]KudeRecoveryDocument, error) {
+	var out []KudeRecoveryDocument
+	err := c.post(ctx, "documents/kude-recovery", map[string]any{"limit": limit}, &out)
+	if err != nil {
+		return nil, err
+	}
+	if out == nil {
+		return []KudeRecoveryDocument{}, nil
+	}
+	return out, nil
 }
 
 // EnqueueKudeTask encola (o reencola) la generación durable del KuDE.

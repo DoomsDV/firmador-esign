@@ -57,6 +57,7 @@ PROMPT === Aplicar politicas VPD (DBMS_RLS) ===
 PROMPT === Migraciones incrementales ===
 @@migrations/20260831_document_xml_artifacts_kude_task.sql
 @@migrations/20260901_ords_internal_service_token.sql
+@@migrations/20260901_fiscal_resilience.sql
 
 PROMPT === Modulos ORDS ===
 @@ords/01_esign_module.sql

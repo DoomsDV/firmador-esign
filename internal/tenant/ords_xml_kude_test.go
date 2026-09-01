@@ -92,6 +92,46 @@ func TestEnqueueKudeTaskPayload(t *testing.T) {
 	}
 }
 
+func TestListKudeRecoveryDocuments(t *testing.T) {
+	t.Parallel()
+
+	var got map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/v1/documents/kude-recovery" {
+			http.NotFound(w, r)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode: %v", err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"data": []map[string]any{{
+				"client_id":   7,
+				"cdc":         "CDC123",
+				"environment": "TEST",
+				"xml_firmado": "<rDE/>",
+				"qr_url":      "https://example.test/qr",
+			}},
+		})
+	}))
+	defer server.Close()
+
+	client := NewORDSClient(server.URL, "tok")
+	docs, err := client.ListKudeRecoveryDocuments(t.Context(), 3)
+	if err != nil {
+		t.Fatalf("ListKudeRecoveryDocuments: %v", err)
+	}
+	if got["limit"] != float64(3) {
+		t.Fatalf("limit = %v, want 3", got["limit"])
+	}
+	if len(docs) != 1 || docs[0].CDC != "CDC123" || docs[0].ClientID != 7 {
+		t.Fatalf("docs = %#v, want one recovery document", docs)
+	}
+}
+
 func TestListPendingRetrySendsServiceTokenAndPropagatesUnauthorized(t *testing.T) {
 	t.Parallel()
 

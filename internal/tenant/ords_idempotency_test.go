@@ -16,6 +16,7 @@ func TestClaimIdempotencyConcurrentRequestsHaveSingleOwner(t *testing.T) {
 		ClientID       int    `json:"client_id"`
 		Environment    string `json:"environment"`
 		IdempotencyKey string `json:"idempotency_key"`
+		RequestSHA256  string `json:"request_sha256"`
 	}
 
 	var mu sync.Mutex
@@ -29,6 +30,9 @@ func TestClaimIdempotencyConcurrentRequestsHaveSingleOwner(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
+		}
+		if request.RequestSHA256 != "request-sha" {
+			t.Errorf("request_sha256 = %q, want request-sha", request.RequestSHA256)
 		}
 		key := strconv.Itoa(request.ClientID) + "/" + request.Environment + "/" + request.IdempotencyKey
 		mu.Lock()
@@ -64,7 +68,7 @@ func TestClaimIdempotencyConcurrentRequestsHaveSingleOwner(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			claim, err := client.ClaimIdempotency(t.Context(), 42, "TEST", "invoice-123")
+			claim, err := client.ClaimIdempotency(t.Context(), 42, "TEST", "invoice-123", "request-sha")
 			if err != nil {
 				errs <- err
 				return

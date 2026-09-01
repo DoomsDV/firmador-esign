@@ -29,6 +29,17 @@ CREATE OR REPLACE PACKAGE pkg_esign_document_api AS
   -- (servicio Go). p_mode: 'flagged' (solo retry_requested=1) | 'all' (todos FIRMADO).
   PROCEDURE pr_list_pending_retry(p_mode IN VARCHAR2, p_limit IN NUMBER, p_out OUT CLOB);
 
+  -- Marca un reintento agotado para conciliación manual; no vuelve a emitir el DE.
+  PROCEDURE pr_mark_retry_reconciliation(
+    p_client_id IN NUMBER,
+    p_cdc       IN VARCHAR2,
+    p_reason    IN VARCHAR2,
+    p_out       OUT CLOB
+  );
+
+  -- Documentos APROBADO con XML/QR pero sin tarea KuDE. Bypass VPD para el worker.
+  PROCEDURE pr_list_kude_recovery(p_limit IN NUMBER, p_out OUT CLOB);
+
 END pkg_esign_document_api;
 /
 
@@ -51,6 +62,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
     l_lang_ctx INTEGER := DBMS_LOB.DEFAULT_LANG_CTX;
     l_warning INTEGER;
     l_doc_estado document.estado%TYPE;
+    l_estado document.estado%TYPE := UPPER(TRIM(json_value(p_body, '$.estado')));
     l_data CLOB;
   BEGIN
     pkg_esign_session.set_client(p_client_id);
@@ -66,7 +78,11 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
       idempotency_key = NVL(d.idempotency_key, NULLIF(TRIM(l_idem), '')),
       retry_requested = CASE
                           WHEN NVL(json_value(p_body, '$.from_retry'), 'false') IN ('true','1')
-                          THEN 0 ELSE d.retry_requested END,
+                          THEN 0
+                          WHEN NVL(json_value(p_body, '$.retry_requested'), 'false') IN ('true','1')
+                          THEN 1
+                          ELSE d.retry_requested
+                        END,
       retry_count = CASE
                       WHEN NVL(json_value(p_body, '$.from_retry'), 'false') IN ('true','1')
                       THEN NVL(d.retry_count, 0) + 1 ELSE d.retry_count END,
@@ -91,25 +107,56 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
       FROM document WHERE client_id = p_client_id AND cdc = l_cdc;
 
     IF NULLIF(TRIM(l_idem), '') IS NOT NULL THEN
+      -- FIRMADO es durable, pero no es un resultado terminal: conserva el
+      -- claim para que una repetición no genere otro CDC. Solo APROBADO o
+      -- RECHAZADO completa la operación lógica.
       MERGE /*+ no_parallel */ INTO document_idempotency i
       USING (
         SELECT p_client_id AS client_id,
-               json_value(p_body, '$.environment') AS environment,
+               UPPER(json_value(p_body, '$.environment')) AS environment,
                TRIM(l_idem) AS idempotency_key,
-               l_cdc AS cdc
+               l_cdc AS cdc,
+               l_sha AS xml_sha256
           FROM dual
       ) s
       ON (i.client_id = s.client_id
           AND i.environment = s.environment
           AND i.idempotency_key = s.idempotency_key)
       WHEN MATCHED THEN UPDATE SET
-        status = 'COMPLETED',
+        status = CASE
+                   WHEN l_estado IN ('APROBADO', 'RECHAZADO', 'CANCELADO') THEN 'COMPLETED'
+                   ELSE 'IN_FLIGHT'
+                 END,
         cdc = s.cdc,
+        phase = CASE
+                  WHEN l_estado IN ('APROBADO', 'RECHAZADO', 'CANCELADO') THEN 'COMPLETED'
+                  WHEN l_estado = 'FIRMADO' THEN 'FIRMADO'
+                  ELSE i.phase
+                END,
+        xml_sha256 = NVL(s.xml_sha256, i.xml_sha256),
+        lease_until = CASE
+                        WHEN l_estado IN ('APROBADO', 'RECHAZADO', 'CANCELADO') THEN NULL
+                        ELSE SYSTIMESTAMP + NUMTODSINTERVAL(2, 'MINUTE')
+                      END,
+        recovery_note = CASE
+                          WHEN l_estado IN ('APROBADO', 'RECHAZADO', 'CANCELADO') THEN NULL
+                          ELSE i.recovery_note
+                        END,
         updated_at = SYSTIMESTAMP
       WHEN NOT MATCHED THEN INSERT (
-        client_id, environment, idempotency_key, status, cdc, created_at, updated_at
+        client_id, environment, idempotency_key, status, cdc, phase, xml_sha256,
+        lease_until, created_at, updated_at
       ) VALUES (
-        s.client_id, s.environment, s.idempotency_key, 'COMPLETED', s.cdc, SYSTIMESTAMP, SYSTIMESTAMP
+        s.client_id, s.environment, s.idempotency_key,
+        CASE WHEN l_estado IN ('APROBADO', 'RECHAZADO', 'CANCELADO') THEN 'COMPLETED' ELSE 'IN_FLIGHT' END,
+        s.cdc,
+        CASE WHEN l_estado IN ('APROBADO', 'RECHAZADO', 'CANCELADO') THEN 'COMPLETED' ELSE 'FIRMADO' END,
+        s.xml_sha256,
+        CASE
+          WHEN l_estado IN ('APROBADO', 'RECHAZADO', 'CANCELADO') THEN NULL
+          ELSE SYSTIMESTAMP + NUMTODSINTERVAL(2, 'MINUTE')
+        END,
+        SYSTIMESTAMP, SYSTIMESTAMP
       );
     END IF;
 
@@ -230,11 +277,16 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
   END pr_find_by_idempotency;
 
   PROCEDURE pr_claim_idempotency(p_client_id IN NUMBER, p_body IN CLOB, p_out OUT CLOB) IS
-    l_env    VARCHAR2(4)   := UPPER(TRIM(json_value(p_body, '$.environment')));
-    l_key    VARCHAR2(128) := TRIM(json_value(p_body, '$.idempotency_key'));
-    l_status document_idempotency.status%TYPE;
-    l_cdc    document_idempotency.cdc%TYPE;
-    l_data   CLOB;
+    l_env             VARCHAR2(4)   := UPPER(TRIM(json_value(p_body, '$.environment')));
+    l_key             VARCHAR2(128) := TRIM(json_value(p_body, '$.idempotency_key'));
+    l_request_sha256  VARCHAR2(64)  := LOWER(TRIM(json_value(p_body, '$.request_sha256')));
+    l_stored_sha256   document_idempotency.request_sha256%TYPE;
+    l_status          document_idempotency.status%TYPE;
+    l_phase           document_idempotency.phase%TYPE;
+    l_lease_until     document_idempotency.lease_until%TYPE;
+    l_cdc             document_idempotency.cdc%TYPE;
+    l_doc_estado      document.estado%TYPE;
+    l_data            CLOB;
   BEGIN
     pkg_esign_session.set_client(p_client_id);
 
@@ -245,17 +297,27 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
 
     BEGIN
       INSERT /*+ no_parallel */ INTO document_idempotency (
-        client_id, environment, idempotency_key, status, created_at, updated_at
+        client_id, environment, idempotency_key, status, phase, request_sha256,
+        lease_until, created_at, updated_at
       ) VALUES (
-        p_client_id, l_env, l_key, 'IN_FLIGHT', SYSTIMESTAMP, SYSTIMESTAMP
+        p_client_id, l_env, l_key, 'IN_FLIGHT', 'CLAIMED', l_request_sha256,
+        SYSTIMESTAMP + NUMTODSINTERVAL(2, 'MINUTE'), SYSTIMESTAMP, SYSTIMESTAMP
       );
     EXCEPTION
       WHEN DUP_VAL_ON_INDEX THEN
-        SELECT status, cdc INTO l_status, l_cdc
+        SELECT status, phase, cdc, request_sha256, lease_until
+          INTO l_status, l_phase, l_cdc, l_stored_sha256, l_lease_until
           FROM document_idempotency
          WHERE client_id = p_client_id
            AND environment = l_env
            AND idempotency_key = l_key;
+
+        IF l_stored_sha256 IS NOT NULL
+           AND l_request_sha256 IS NOT NULL
+           AND l_stored_sha256 <> l_request_sha256 THEN
+          raise_application_error(pkg_esign_http.c_ora_conflict,
+            'Idempotency-Key reutilizada con un payload diferente');
+        END IF;
 
         IF l_status = 'COMPLETED' AND l_cdc IS NOT NULL THEN
           BEGIN
@@ -282,21 +344,61 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
           END;
         END IF;
 
-        IF l_data IS NULL THEN
+        IF l_data IS NOT NULL THEN
+          p_out := pkg_esign_util.fn_ok(l_data);
+          RETURN;
+        END IF;
+
+        -- Un claim inicial sin CDC sí puede ser retomado al vencer. Si ya
+        -- existe XML/CDC, la operación es ambigua y solo el worker puede
+        -- recuperarla con los bytes firmados originales.
+        IF l_status = 'IN_FLIGHT'
+           AND l_phase = 'CLAIMED'
+           AND l_cdc IS NULL
+           AND (l_lease_until IS NULL OR l_lease_until < SYSTIMESTAMP) THEN
+          UPDATE /*+ no_parallel */ document_idempotency
+             SET request_sha256 = NVL(l_request_sha256, request_sha256),
+                 lease_until = SYSTIMESTAMP + NUMTODSINTERVAL(2, 'MINUTE'),
+                 updated_at = SYSTIMESTAMP
+           WHERE client_id = p_client_id
+             AND environment = l_env
+             AND idempotency_key = l_key;
+
           SELECT JSON_OBJECT(
-                   'claim_status' VALUE 'IN_FLIGHT',
+                   'claim_status' VALUE 'ACQUIRED',
                    'found' VALUE 'false' FORMAT JSON
                    RETURNING CLOB)
             INTO l_data
             FROM dual;
+          p_out := pkg_esign_util.fn_ok(l_data);
+          RETURN;
         END IF;
+
+        IF l_status = 'IN_FLIGHT'
+           AND (l_lease_until IS NULL OR l_lease_until < SYSTIMESTAMP) THEN
+          UPDATE /*+ no_parallel */ document_idempotency
+             SET phase = 'RECOVERY_REQUIRED',
+                 recovery_note = 'lease vencido tras persistir DE firmado; requiere worker de recuperación',
+                 updated_at = SYSTIMESTAMP
+           WHERE client_id = p_client_id
+             AND environment = l_env
+             AND idempotency_key = l_key;
+        END IF;
+
+        SELECT JSON_OBJECT(
+                 'claim_status' VALUE 'IN_FLIGHT',
+                 'found' VALUE 'false' FORMAT JSON,
+                 'phase' VALUE NVL(l_phase, 'CLAIMED')
+                 RETURNING CLOB)
+          INTO l_data
+          FROM dual;
         p_out := pkg_esign_util.fn_ok(l_data);
         RETURN;
     END;
 
     -- Backfill defensivo: una emisión previa al endpoint de claim ya es definitiva.
     BEGIN
-      SELECT cdc INTO l_cdc
+      SELECT cdc, estado INTO l_cdc, l_doc_estado
         FROM document
        WHERE client_id = p_client_id
          AND environment = l_env
@@ -309,30 +411,51 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
 
     IF l_cdc IS NOT NULL THEN
       UPDATE /*+ no_parallel */ document_idempotency
-         SET status = 'COMPLETED',
+         SET status = CASE
+                        WHEN l_doc_estado IN ('APROBADO', 'RECHAZADO', 'CANCELADO') THEN 'COMPLETED'
+                        ELSE 'IN_FLIGHT'
+                      END,
              cdc = l_cdc,
+             phase = CASE
+                       WHEN l_doc_estado IN ('APROBADO', 'RECHAZADO', 'CANCELADO') THEN 'COMPLETED'
+                       ELSE 'RECOVERY_REQUIRED'
+                     END,
+             lease_until = CASE
+                             WHEN l_doc_estado IN ('APROBADO', 'RECHAZADO', 'CANCELADO') THEN NULL
+                             ELSE SYSTIMESTAMP - NUMTODSINTERVAL(1, 'SECOND')
+                           END,
              updated_at = SYSTIMESTAMP
        WHERE client_id = p_client_id
          AND environment = l_env
          AND idempotency_key = l_key;
 
-      SELECT JSON_OBJECT(
-               'claim_status' VALUE 'COMPLETED',
-               'found' VALUE 'true' FORMAT JSON,
-               'cdc' VALUE d.cdc,
-               'estado' VALUE d.estado,
-               'cod_res' VALUE d.cod_res,
-               'prot_aut' VALUE d.prot_aut,
-               'mensaje_res' VALUE d.mensaje_res,
-               'num_documento' VALUE d.num_documento,
-               'ambiente' VALUE LOWER(d.environment),
-               'qr_url' VALUE x.qr_url
-               RETURNING CLOB)
-        INTO l_data
-        FROM document d
-        LEFT JOIN document_xml x ON x.document_id = d.id_document
-       WHERE d.client_id = p_client_id
-         AND d.cdc = l_cdc;
+      IF l_doc_estado IN ('APROBADO', 'RECHAZADO', 'CANCELADO') THEN
+        SELECT JSON_OBJECT(
+                 'claim_status' VALUE 'COMPLETED',
+                 'found' VALUE 'true' FORMAT JSON,
+                 'cdc' VALUE d.cdc,
+                 'estado' VALUE d.estado,
+                 'cod_res' VALUE d.cod_res,
+                 'prot_aut' VALUE d.prot_aut,
+                 'mensaje_res' VALUE d.mensaje_res,
+                 'num_documento' VALUE d.num_documento,
+                 'ambiente' VALUE LOWER(d.environment),
+                 'qr_url' VALUE x.qr_url
+                 RETURNING CLOB)
+          INTO l_data
+          FROM document d
+          LEFT JOIN document_xml x ON x.document_id = d.id_document
+         WHERE d.client_id = p_client_id
+           AND d.cdc = l_cdc;
+      ELSE
+        SELECT JSON_OBJECT(
+                 'claim_status' VALUE 'IN_FLIGHT',
+                 'found' VALUE 'false' FORMAT JSON,
+                 'phase' VALUE 'RECOVERY_REQUIRED'
+                 RETURNING CLOB)
+          INTO l_data
+          FROM dual;
+      END IF;
       p_out := pkg_esign_util.fn_ok(l_data);
       RETURN;
     END IF;
@@ -363,7 +486,9 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
      WHERE client_id = p_client_id
        AND environment = l_env
        AND idempotency_key = l_key
-       AND status = 'IN_FLIGHT';
+       AND status = 'IN_FLIGHT'
+       AND phase = 'CLAIMED'
+       AND cdc IS NULL;
     l_released := SQL%ROWCOUNT;
 
     SELECT JSON_OBJECT(
@@ -568,7 +693,8 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
                'moneda' VALUE d.moneda,
                'total_operacion' VALUE d.total_operacion,
                'qr_url' VALUE x.qr_url,
-               'xml_firmado' VALUE x.xml_firmado
+               'xml_firmado' VALUE x.xml_firmado,
+               'idempotency_key' VALUE d.idempotency_key
                RETURNING CLOB)
              ORDER BY d.retry_requested DESC, NVL(d.last_retry_at, d.fecha_emision) ASC
              RETURNING CLOB)
@@ -577,7 +703,14 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
         SELECT d.*
           FROM document d
          WHERE d.estado = 'FIRMADO'
-           AND (l_mode = 'all' OR d.retry_requested = 1)
+           AND NVL(d.recovery_required, 0) = 0
+           AND (
+                 d.retry_requested = 1
+                 OR (
+                   l_mode = 'all'
+                   AND d.fecha_emision < SYSTIMESTAMP - NUMTODSINTERVAL(2, 'MINUTE')
+                 )
+               )
            AND EXISTS (
                  SELECT 1 FROM document_xml x
                   WHERE x.document_id = d.id_document AND x.xml_firmado IS NOT NULL)
@@ -593,6 +726,91 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
       BEGIN pkg_esign_session.end_bootstrap; EXCEPTION WHEN OTHERS THEN NULL; END;
       RAISE;
   END pr_list_pending_retry;
+
+  PROCEDURE pr_mark_retry_reconciliation(
+    p_client_id IN NUMBER,
+    p_cdc       IN VARCHAR2,
+    p_reason    IN VARCHAR2,
+    p_out       OUT CLOB
+  ) IS
+    l_data CLOB;
+  BEGIN
+    pkg_esign_session.set_client(p_client_id);
+
+    UPDATE /*+ no_parallel */ document
+       SET recovery_required = 1,
+           recovery_reason = SUBSTR(TRIM(p_reason), 1, 500),
+           recovery_marked_at = SYSTIMESTAMP,
+           retry_requested = 0
+     WHERE client_id = p_client_id
+       AND cdc = p_cdc
+       AND estado = 'FIRMADO';
+
+    IF SQL%ROWCOUNT = 0 THEN
+      raise_application_error(pkg_esign_http.c_ora_not_found,
+        'documento FIRMADO inexistente para conciliación');
+    END IF;
+
+    UPDATE /*+ no_parallel */ document_idempotency
+       SET phase = 'RECOVERY_REQUIRED',
+           recovery_note = SUBSTR(TRIM(p_reason), 1, 500),
+           updated_at = SYSTIMESTAMP
+     WHERE client_id = p_client_id
+       AND cdc = p_cdc
+       AND status = 'IN_FLIGHT';
+
+    SELECT JSON_OBJECT(
+             'cdc' VALUE p_cdc,
+             'recovery_required' VALUE 'true' FORMAT JSON
+             RETURNING CLOB)
+      INTO l_data
+      FROM dual;
+    p_out := pkg_esign_util.fn_ok(l_data);
+  END pr_mark_retry_reconciliation;
+
+  PROCEDURE pr_list_kude_recovery(p_limit IN NUMBER, p_out OUT CLOB) IS
+    l_limit NUMBER := LEAST(GREATEST(NVL(p_limit, 20), 1), 100);
+    l_data  CLOB;
+  BEGIN
+    -- El worker de KuDE atiende todos los tenants; solo devuelve documentos
+    -- APROBADO con XML/QR íntegros y sin tarea durable.
+    pkg_esign_session.begin_bootstrap;
+
+    SELECT JSON_ARRAYAGG(
+             JSON_OBJECT(
+               'client_id' VALUE d.client_id,
+               'cdc' VALUE d.cdc,
+               'environment' VALUE d.environment,
+               'xml_firmado' VALUE x.xml_firmado,
+               'qr_url' VALUE x.qr_url
+               RETURNING CLOB)
+             ORDER BY d.fecha_emision ASC
+             RETURNING CLOB)
+      INTO l_data
+      FROM (
+        SELECT d.id_document, d.client_id, d.cdc, d.environment, d.fecha_emision
+          FROM document d
+          JOIN document_xml x ON x.document_id = d.id_document
+         WHERE d.estado = 'APROBADO'
+           AND x.xml_firmado IS NOT NULL
+           AND x.qr_url IS NOT NULL
+           AND NOT EXISTS (
+                 SELECT 1
+                   FROM document_kude_task t
+                  WHERE t.document_id = d.id_document
+               )
+         ORDER BY d.fecha_emision ASC
+         FETCH FIRST l_limit ROWS ONLY
+      ) d
+      JOIN document_xml x ON x.document_id = d.id_document;
+
+    pkg_esign_session.end_bootstrap;
+    p_out := pkg_esign_util.fn_ok(NVL(l_data, TO_CLOB('[]')));
+  EXCEPTION
+    WHEN OTHERS THEN
+      BEGIN pkg_esign_session.end_bootstrap; EXCEPTION WHEN OTHERS THEN NULL; END;
+      RAISE;
+  END pr_list_kude_recovery;
 
 END pkg_esign_document_api;
 /

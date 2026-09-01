@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/DoomsDV/firmador-e/internal/gotenberg"
 	"github.com/DoomsDV/firmador-e/internal/kude"
+	"github.com/DoomsDV/firmador-e/internal/sifen"
 	"github.com/DoomsDV/firmador-e/internal/tenant"
 )
 
@@ -77,6 +79,8 @@ func (w *Worker) Start(ctx context.Context) {
 }
 
 func (w *Worker) cycle(ctx context.Context) {
+	w.reconcileMissingTasks(ctx)
+
 	tasks, err := w.resolver.ORDS().ClaimKudeTasks(ctx, w.owner, w.cfg.LeaseSeconds, w.cfg.Batch)
 	if err != nil {
 		log.Printf("⚠️  kude queue: claim: %v", err)
@@ -90,6 +94,60 @@ func (w *Worker) cycle(ctx context.Context) {
 			log.Printf("⚠️  kude queue task=%d cdc=%s: %v", tasks[i].TaskID, tasks[i].CDC, err)
 		}
 	}
+}
+
+// reconcileMissingTasks convierte en tareas durables los documentos APROBADO
+// cuyo proceso murió después de persistir el XML, pero antes de encolar KuDE.
+func (w *Worker) reconcileMissingTasks(ctx context.Context) {
+	docs, err := w.resolver.ORDS().ListKudeRecoveryDocuments(ctx, w.cfg.Batch)
+	if err != nil {
+		log.Printf("⚠️  kude queue: recuperar tareas faltantes: %v", err)
+		return
+	}
+
+	for i := range docs {
+		if ctx.Err() != nil {
+			return
+		}
+		doc := &docs[i]
+		if err := w.enqueueRecoveredDocument(ctx, doc); err != nil {
+			log.Printf("⚠️  kude queue recovery cdc=%s: %v", doc.CDC, err)
+		}
+	}
+}
+
+func (w *Worker) enqueueRecoveredDocument(ctx context.Context, doc *tenant.KudeRecoveryDocument) error {
+	if strings.TrimSpace(doc.XMLFirmado) == "" || strings.TrimSpace(doc.QRURL) == "" {
+		return fmt.Errorf("xml o QR faltante")
+	}
+
+	rde, err := sifen.ParseRDEXML([]byte(doc.XMLFirmado))
+	if err != nil {
+		return fmt.Errorf("parsear xml firmado: %w", err)
+	}
+	branding := kude.Branding{TemplateID: kude.TemplateMinimalista, MostrarFantasia: true}
+	if cfg, err := w.resolver.ORDS().GetKudeConfig(ctx, doc.ClientID); err == nil {
+		branding = kude.Branding{
+			TemplateID:      cfg.TemplateID,
+			ColorPrimario:   cfg.ColorPrimario,
+			LogoURL:         cfg.LogoURL,
+			NotasFooter:     cfg.NotasFooter,
+			MostrarFantasia: cfg.MostrarFantasia,
+		}
+	}
+	data, err := kude.BuildKudeData(rde, doc.QRURL, strings.ToUpper(doc.Environment), branding)
+	if err != nil {
+		return fmt.Errorf("armar KuDE: %w", err)
+	}
+	payload, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("serializar KuDE: %w", err)
+	}
+	if err := w.resolver.ORDS().EnqueueKudeTask(ctx, doc.ClientID, doc.CDC, string(payload)); err != nil {
+		return fmt.Errorf("encolar tarea: %w", err)
+	}
+	log.Printf("🧾 kude queue recovery cdc=%s → PENDING", doc.CDC)
+	return nil
 }
 
 func (w *Worker) processOne(ctx context.Context, task *tenant.KudeTask) error {

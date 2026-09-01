@@ -395,6 +395,80 @@ BEGIN
         p_limit => NVL(TO_NUMBER(json_value(l_body, '$.limit')), 50),
         p_out   => l_out
     );
+    COMMIT;
+    htp.p(l_out);
+END;]');
+
+  ---------------------------------------------------------------------------
+  -- DOCUMENTS/RETRY/RECONCILIATION: detiene un reintento automático agotado.
+  ---------------------------------------------------------------------------
+  ords.define_template(
+    p_module_name => 'esign_internal',
+    p_pattern => 'documents/retry/reconciliation'
+  );
+  ords.define_handler(
+    p_module_name => 'esign_internal',
+    p_pattern => 'documents/retry/reconciliation',
+    p_method => 'POST',
+    p_source_type => ords.source_type_plsql,
+    p_source => q'[
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+BEGIN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
+        pkg_esign_http.pr_error(
+            p_status  => pkg_esign_http.c_unauthorized,
+            p_reason  => pkg_esign_http.m_unauthorized,
+            p_code    => pkg_esign_http.e_unauthorized,
+            p_message => pkg_esign_http.msg_service_token
+        );
+        RETURN;
+    END IF;
+
+    pkg_esign_document_api.pr_mark_retry_reconciliation(
+        p_client_id => TO_NUMBER(json_value(l_body, '$.client_id')),
+        p_cdc       => json_value(l_body, '$.cdc'),
+        p_reason    => json_value(l_body, '$.reason'),
+        p_out       => l_out
+    );
+    COMMIT;
+    htp.p(l_out);
+END;]');
+
+  ---------------------------------------------------------------------------
+  -- DOCUMENTS/KUDE-RECOVERY: APROBADO con XML/QR y sin tarea KuDE.
+  ---------------------------------------------------------------------------
+  ords.define_template(
+    p_module_name => 'esign_internal',
+    p_pattern => 'documents/kude-recovery'
+  );
+  ords.define_handler(
+    p_module_name => 'esign_internal',
+    p_pattern => 'documents/kude-recovery',
+    p_method => 'POST',
+    p_source_type => ords.source_type_plsql,
+    p_source => q'[
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+BEGIN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
+        pkg_esign_http.pr_error(
+            p_status  => pkg_esign_http.c_unauthorized,
+            p_reason  => pkg_esign_http.m_unauthorized,
+            p_code    => pkg_esign_http.e_unauthorized,
+            p_message => pkg_esign_http.msg_service_token
+        );
+        RETURN;
+    END IF;
+
+    pkg_esign_document_api.pr_list_kude_recovery(
+        p_limit => NVL(TO_NUMBER(json_value(l_body, '$.limit')), 20),
+        p_out   => l_out
+    );
     htp.p(l_out);
 END;]');
 
