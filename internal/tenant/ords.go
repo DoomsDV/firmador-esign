@@ -3,6 +3,8 @@ package tenant
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -131,15 +133,15 @@ type contextResponse struct {
 		} `json:"actividades"`
 	} `json:"emisor"`
 	Establecimientos []struct {
-		Codigo       string  `json:"codigo"`
-		Denominacion string  `json:"denominacion"`
-		Direccion    string  `json:"direccion"`
-		NumCasa      string  `json:"num_casa"`
-		Dep          geoJSON `json:"dep"`
-		Dis          geoJSON `json:"dis"`
-		Ciu          geoJSON `json:"ciu"`
-		Telefono     string  `json:"telefono"`
-		Email        string  `json:"email"`
+		Codigo       string   `json:"codigo"`
+		Denominacion string   `json:"denominacion"`
+		Direccion    string   `json:"direccion"`
+		NumCasa      string   `json:"num_casa"`
+		Dep          geoJSON  `json:"dep"`
+		Dis          geoJSON  `json:"dis"`
+		Ciu          geoJSON  `json:"ciu"`
+		Telefono     string   `json:"telefono"`
+		Email        string   `json:"email"`
 		Puntos       []string `json:"puntos"`
 	} `json:"establecimientos"`
 	SifenEnv *struct {
@@ -148,6 +150,13 @@ type contextResponse struct {
 		IdCSC               string `json:"id_csc"`
 		KeyVersion          int    `json:"key_version"`
 	} `json:"sifen_env"`
+	KudeConfig struct {
+		TemplateID      string `json:"template_id"`
+		ColorPrimario   string `json:"color_primario"`
+		LogoURL         string `json:"logo_url"`
+		NotasFooter     string `json:"notas_footer"`
+		MostrarFantasia int    `json:"mostrar_fantasia"`
+	} `json:"kude_config"`
 }
 
 type geoJSON struct {
@@ -238,31 +247,117 @@ type DocumentRecord struct {
 	ProtAut         string `json:"prot_aut"`
 	MensajeRes      string `json:"mensaje_res"`
 	XMLFirmado      string `json:"xml_firmado"`
+	XMLSHA256       string `json:"xml_sha256,omitempty"`
+	XMLSizeBytes    int    `json:"xml_size_bytes,omitempty"`
+	XMLMimeType     string `json:"xml_mime_type,omitempty"`
 	QRURL           string `json:"qr_url"`
 	FromRetry       bool   `json:"from_retry,omitempty"`
+	RetryRequested  bool   `json:"retry_requested,omitempty"`
+	IdempotencyKey  string `json:"idempotency_key,omitempty"`
+}
+
+// IdempotentDocument es el resultado de una emisión previa por Idempotency-Key.
+type IdempotentDocument struct {
+	CDC             string `json:"cdc"`
+	Estado          string `json:"estado"`
+	CodRes          string `json:"cod_res"`
+	ProtAut         string `json:"prot_aut"`
+	MensajeRes      string `json:"mensaje_res"`
+	NumeroDocumento string `json:"num_documento"`
+	Ambiente        string `json:"ambiente"`
+	QRURL           string `json:"qr_url"`
+	Phase           string `json:"phase"`
+	Found           bool   `json:"found"`
+}
+
+// IdempotencyClaim es el resultado del reclamo atómico de una Idempotency-Key.
+// ClaimStatus es ACQUIRED, IN_FLIGHT o COMPLETED. COMPLETED incluye el DE previo.
+type IdempotencyClaim struct {
+	ClaimStatus     string `json:"claim_status"`
+	CDC             string `json:"cdc"`
+	Estado          string `json:"estado"`
+	CodRes          string `json:"cod_res"`
+	ProtAut         string `json:"prot_aut"`
+	MensajeRes      string `json:"mensaje_res"`
+	NumeroDocumento string `json:"num_documento"`
+	Ambiente        string `json:"ambiente"`
+	QRURL           string `json:"qr_url"`
+	Found           bool   `json:"found"`
 }
 
 func (c *ORDSClient) RegisterDocument(ctx context.Context, rec DocumentRecord) error {
+	if rec.XMLFirmado != "" && rec.XMLSHA256 == "" {
+		sum := sha256.Sum256([]byte(rec.XMLFirmado))
+		rec.XMLSHA256 = hex.EncodeToString(sum[:])
+		rec.XMLSizeBytes = len(rec.XMLFirmado)
+		if rec.XMLMimeType == "" {
+			rec.XMLMimeType = "application/xml; charset=UTF-8"
+		}
+	}
 	return c.post(ctx, "documents", rec, nil)
+}
+
+// ClaimIdempotency reclama una clave antes de la emisión. requestSHA256 vincula
+// la clave con el payload normalizado y evita reutilizarla para otro documento.
+func (c *ORDSClient) ClaimIdempotency(
+	ctx context.Context,
+	clientID int,
+	env, key, requestSHA256 string,
+) (*IdempotencyClaim, error) {
+	var out IdempotencyClaim
+	err := c.post(ctx, "documents/idempotency/claim", map[string]any{
+		"client_id":       clientID,
+		"environment":     env,
+		"idempotency_key": key,
+		"request_sha256":  requestSHA256,
+	}, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ReleaseIdempotency libera un reclamo que no alcanzó a iniciar el envío a SIFEN.
+func (c *ORDSClient) ReleaseIdempotency(ctx context.Context, clientID int, env, key string) error {
+	return c.post(ctx, "documents/idempotency/release", map[string]any{
+		"client_id":       clientID,
+		"environment":     env,
+		"idempotency_key": key,
+	}, nil)
+}
+
+// FindByIdempotencyKey busca un DE ya emitido para (client, env, key). found=false si no hay.
+func (c *ORDSClient) FindByIdempotencyKey(ctx context.Context, clientID int, env, key string) (*IdempotentDocument, error) {
+	var out IdempotentDocument
+	err := c.post(ctx, "documents/by-idempotency", map[string]any{
+		"client_id":       clientID,
+		"environment":     env,
+		"idempotency_key": key,
+	}, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // PendingRetryDoc es un DE FIRMADO listo para reenvio (XML ya firmado).
 type PendingRetryDoc struct {
-	CDC             string  `json:"cdc"`
-	ClientID        int     `json:"client_id"`
-	Environment     string  `json:"environment"`
-	Establecimiento string  `json:"establecimiento"`
-	PuntoExpedicion string  `json:"punto_expedicion"`
-	NumDocumento    string  `json:"num_documento"`
-	TipoDE          int     `json:"tipo_de"`
-	RetryRequested  int     `json:"retry_requested"`
-	RetryCount      int     `json:"retry_count"`
-	ReceptorNombre  string  `json:"receptor_nombre"`
-	ReceptorDoc     string  `json:"receptor_doc"`
-	Moneda          string  `json:"moneda"`
+	CDC             string   `json:"cdc"`
+	ClientID        int      `json:"client_id"`
+	Environment     string   `json:"environment"`
+	Establecimiento string   `json:"establecimiento"`
+	PuntoExpedicion string   `json:"punto_expedicion"`
+	NumDocumento    string   `json:"num_documento"`
+	TipoDE          int      `json:"tipo_de"`
+	RetryRequested  int      `json:"retry_requested"`
+	RetryCount      int      `json:"retry_count"`
+	ReceptorNombre  string   `json:"receptor_nombre"`
+	ReceptorDoc     string   `json:"receptor_doc"`
+	Moneda          string   `json:"moneda"`
 	TotalOperacion  *float64 `json:"total_operacion"`
-	QRURL           string  `json:"qr_url"`
-	XMLFirmado      string  `json:"xml_firmado"`
+	QRURL           string   `json:"qr_url"`
+	XMLFirmado      string   `json:"xml_firmado"`
+	IdempotencyKey  string   `json:"idempotency_key"`
 }
 
 // ListPendingRetry pide documentos FIRMADO pendientes. mode: "flagged" | "all".
@@ -279,6 +374,20 @@ func (c *ORDSClient) ListPendingRetry(ctx context.Context, mode string, limit in
 		return []PendingRetryDoc{}, nil
 	}
 	return out, nil
+}
+
+// MarkRetryReconciliationRequired detiene la reemisión automática de un DE
+// FIRMADO cuando se agotaron los intentos y deja evidencia para conciliación.
+func (c *ORDSClient) MarkRetryReconciliationRequired(
+	ctx context.Context,
+	clientID int,
+	cdc, reason string,
+) error {
+	return c.post(ctx, "documents/retry/reconciliation", map[string]any{
+		"client_id": clientID,
+		"cdc":       cdc,
+		"reason":    reason,
+	}, nil)
 }
 
 // StoreCertificate persiste un certificado YA cifrado (hex) vía ORDS interno.
@@ -317,6 +426,158 @@ type LogEntry struct {
 
 func (c *ORDSClient) Log(ctx context.Context, entry LogEntry) error {
 	return c.post(ctx, "logs", entry, nil)
+}
+
+// UploadKude sube el PDF ya renderizado (Gotenberg) al bucket OCI vía el paquete
+// PL/SQL (mismo patrón que StoreCertificate/StoreEnvironment: el binario cruza en
+// hex). Devuelve la URL pública del objeto. Best-effort: el llamador no debe fallar
+// la emisión SIFEN si esto devuelve error.
+func (c *ORDSClient) UploadKude(ctx context.Context, clientID int, cdc string, pdf []byte) (string, error) {
+	var out struct {
+		KudeURL string `json:"kude_url"`
+	}
+	err := c.post(ctx, "kude", map[string]any{
+		"client_id": clientID,
+		"cdc":       cdc,
+		"pdf_hex":   hex.EncodeToString(pdf),
+	}, &out)
+	if err != nil {
+		return "", err
+	}
+	return out.KudeURL, nil
+}
+
+// GetKude consulta la URL pública (bucket OCI) y el estado de generación del
+// KuDE de un documento ya emitido. estado: "pending" | "ready" | "failed".
+// Un cdc inexistente para ese client_id devuelve *ORDSError con HTTPStatus 404.
+func (c *ORDSClient) GetKude(ctx context.Context, clientID int, cdc string) (kudeURL, estado string, err error) {
+	var out struct {
+		KudeURL string `json:"kude_url"`
+		Estado  string `json:"estado"`
+	}
+	err = c.post(ctx, "kude/status", map[string]any{"client_id": clientID, "cdc": cdc}, &out)
+	if err != nil {
+		return "", "", err
+	}
+	return out.KudeURL, out.Estado, nil
+}
+
+// XMLArtifact es el XML firmado canónico + metadatos (solo APROBADO).
+type XMLArtifact struct {
+	CDC             string `json:"cdc"`
+	Estado          string `json:"estado"`
+	XMLFirmado      string `json:"xml_firmado"`
+	XMLSHA256       string `json:"xml_sha256"`
+	XMLSizeBytes    int    `json:"xml_size_bytes"`
+	XMLMimeType     string `json:"xml_mime_type"`
+	XMLCapturedAt   string `json:"xml_captured_at"`
+	XMLAvailability string `json:"xml_availability"`
+}
+
+// GetXMLArtifact obtiene el CLOB firmado y metadatos para un CDC APROBADO.
+func (c *ORDSClient) GetXMLArtifact(ctx context.Context, clientID int, cdc string) (*XMLArtifact, error) {
+	var out XMLArtifact
+	err := c.post(ctx, "documents/xml", map[string]any{"client_id": clientID, "cdc": cdc}, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// KudeTask es una tarea reclamada de la cola durable de KuDE.
+type KudeTask struct {
+	TaskID      int64  `json:"task_id"`
+	ClientID    int    `json:"client_id"`
+	DocumentID  int64  `json:"document_id"`
+	CDC         string `json:"cdc"`
+	Status      string `json:"status"`
+	Attempts    int    `json:"attempts"`
+	PayloadJSON string `json:"payload_json"`
+}
+
+// KudeRecoveryDocument es un DE APROBADO con XML/QR persistidos al que aún no
+// se le creó una tarea durable de KuDE.
+type KudeRecoveryDocument struct {
+	ClientID    int    `json:"client_id"`
+	CDC         string `json:"cdc"`
+	Environment string `json:"environment"`
+	XMLFirmado  string `json:"xml_firmado"`
+	QRURL       string `json:"qr_url"`
+}
+
+// ListKudeRecoveryDocuments devuelve documentos aprobados sin tarea KuDE para
+// que el worker reconstruya el payload a partir del XML firmado canónico.
+func (c *ORDSClient) ListKudeRecoveryDocuments(
+	ctx context.Context,
+	limit int,
+) ([]KudeRecoveryDocument, error) {
+	var out []KudeRecoveryDocument
+	err := c.post(ctx, "documents/kude-recovery", map[string]any{"limit": limit}, &out)
+	if err != nil {
+		return nil, err
+	}
+	if out == nil {
+		return []KudeRecoveryDocument{}, nil
+	}
+	return out, nil
+}
+
+// EnqueueKudeTask encola (o reencola) la generación durable del KuDE.
+// payloadJSON es el KudeData serializado; vacío conserva el payload previo.
+func (c *ORDSClient) EnqueueKudeTask(ctx context.Context, clientID int, cdc, payloadJSON string) error {
+	return c.post(ctx, "kude-task/enqueue", map[string]any{
+		"client_id":    clientID,
+		"cdc":          cdc,
+		"payload_json": payloadJSON,
+	}, nil)
+}
+
+// GetKudeConfig obtiene el branding KuDE del cliente (worker sin API key).
+func (c *ORDSClient) GetKudeConfig(ctx context.Context, clientID int) (KudeConfig, error) {
+	var out struct {
+		TemplateID      string `json:"template_id"`
+		ColorPrimario   string `json:"color_primario"`
+		LogoURL         string `json:"logo_url"`
+		NotasFooter     string `json:"notas_footer"`
+		MostrarFantasia int    `json:"mostrar_fantasia"`
+	}
+	err := c.post(ctx, "kude-config", map[string]any{"client_id": clientID}, &out)
+	if err != nil {
+		return KudeConfig{}, err
+	}
+	return KudeConfig{
+		TemplateID:      out.TemplateID,
+		ColorPrimario:   out.ColorPrimario,
+		LogoURL:         out.LogoURL,
+		NotasFooter:     out.NotasFooter,
+		MostrarFantasia: out.MostrarFantasia != 0,
+	}, nil
+}
+
+// ClaimKudeTasks reclama hasta limit tareas con lease.
+func (c *ORDSClient) ClaimKudeTasks(ctx context.Context, leaseOwner string, leaseSeconds, limit int) ([]KudeTask, error) {
+	var out []KudeTask
+	err := c.post(ctx, "kude-task/claim", map[string]any{
+		"lease_owner":   leaseOwner,
+		"lease_seconds": leaseSeconds,
+		"limit":         limit,
+	}, &out)
+	if err != nil {
+		return nil, err
+	}
+	if out == nil {
+		return []KudeTask{}, nil
+	}
+	return out, nil
+}
+
+// CompleteKudeTask marca READY (success) o reencola/FAILED (error).
+func (c *ORDSClient) CompleteKudeTask(ctx context.Context, taskID int64, success bool, errMsg string) error {
+	return c.post(ctx, "kude-task/complete", map[string]any{
+		"task_id": taskID,
+		"success": success,
+		"error":   errMsg,
+	}, nil)
 }
 
 func truncate(s string, n int) string {

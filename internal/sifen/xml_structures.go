@@ -200,6 +200,20 @@ type GPaConEIni struct {
 	DMonTiPag   decimal.Decimal `xml:"dMonTiPag"`
 	CMoneTiPag  string          `xml:"cMoneTiPag"`
 	DDMoneTiPag string          `xml:"dDMoneTiPag"`
+	GPagTarCD   *GPagTarCD      `xml:"gPagTarCD,omitempty"`
+}
+
+// GPagTarCD describe pago con tarjeta (E620+) cuando iTiPago es 3 o 4.
+type GPagTarCD struct {
+	IDenTarj    int    `xml:"iDenTarj"`
+	DDesDenTarj string `xml:"dDesDenTarj"`
+	DRSProTar   string `xml:"dRSProTar,omitempty"`
+	DRUCProTar  string `xml:"dRUCProTar,omitempty"`
+	DDVProTar   int    `xml:"dDVProTar,omitempty"`
+	IForProPa   int    `xml:"iForProPa"`
+	DCodAuOpe   int    `xml:"dCodAuOpe,omitempty"`
+	DNomTit     string `xml:"dNomTit,omitempty"`
+	DNumTarj    int    `xml:"dNumTarj,omitempty"`
 }
 
 // GPagCred describe operación a crédito (E640-E649). Obligatorio si iCondOpe=2.

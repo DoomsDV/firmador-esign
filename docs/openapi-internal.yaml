@@ -1,0 +1,247 @@
+openapi: 3.0.3
+info:
+  title: esign — API Interna Go↔ORDS
+  version: "1.0.0"
+  description: |
+    Contrato **privado** entre el servicio Go (`firmador`) y ORDS.
+
+    Base URL: `{ORDS}/internal/v1`
+    Autenticación: header `X-Service-Token` (valor en `app_parameter.SERVICE_TOKEN`).
+
+    **No publicar a integradores.** El panel y los clientes externos no deben consumir estos endpoints.
+
+servers:
+  - url: https://g9549f707e8ebfa-aoxdev.adb.sa-saopaulo-1.oraclecloudapps.com/ords/esign
+    description: ORDS interno
+
+tags:
+  - name: Interno
+    description: Contrato Go↔ORDS. Header X-Service-Token.
+
+security:
+  - serviceToken: []
+
+paths:
+  /internal/v1/context:
+    post:
+      tags: [Interno]
+      summary: Resolver API key → client_id + config + establecimientos
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [api_key]
+              properties: { api_key: { type: string, example: "<API key del tenant>" } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /internal/v1/next-number:
+    post:
+      tags: [Interno]
+      summary: Correlativo con bloqueo para (est, punto, tipo_de)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [client_id, environment, establecimiento, punto_expedicion, tipo_de]
+              properties:
+                client_id: { type: integer }
+                environment: { type: string, enum: [TEST, PROD] }
+                establecimiento: { type: string }
+                punto_expedicion: { type: string }
+                tipo_de: { type: integer }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+
+  /internal/v1/certificate:
+    post:
+      tags: [Interno]
+      summary: Blobs cifrados del certificado ACTIVE (hex)
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [client_id], properties: { client_id: { type: integer } } } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+
+  /internal/v1/certificate/store:
+    post:
+      tags: [Interno]
+      summary: Persistir P12 cifrado (mediacion Go del panel)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - { $ref: "#/components/schemas/CertificateRequest" }
+                - type: object
+                  required: [client_id]
+                  properties:
+                    client_id: { type: integer }
+                    role: { type: string, default: owner }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+
+  /internal/v1/csc:
+    post:
+      tags: [Interno]
+      summary: CSC cifrado (hex) del ambiente para el QR
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [client_id, environment], properties: { client_id: { type: integer }, environment: { type: string } } } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+
+  /internal/v1/environments/store:
+    post:
+      tags: [Interno]
+      summary: Persistir timbrado + CSC cifrado (mediacion Go del panel)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - { $ref: "#/components/schemas/EnvironmentRequest" }
+                - type: object
+                  required: [client_id]
+                  properties:
+                    client_id: { type: integer }
+                    role: { type: string, default: owner }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+
+  /internal/v1/documents:
+    post:
+      tags: [Interno]
+      summary: Registrar/actualizar documento emitido
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+
+  /internal/v1/documents/pending-retry:
+    post:
+      tags: [Interno]
+      summary: Listar documentos FIRMADO pendientes de reenvio (con xml_firmado)
+      description: |
+        Usado por el worker de Go. `mode=flagged` solo `retry_requested=1`;
+        `mode=all` todos los FIRMADO con XML. Bypass VPD (multi-tenant).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode: { type: string, enum: [flagged, all], default: flagged }
+                limit: { type: integer, default: 50, maximum: 200 }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+
+  /internal/v1/events:
+    post:
+      tags: [Interno]
+      summary: Registrar evento (cancelacion/inutilizacion)
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+
+  /internal/v1/logs:
+    post:
+      tags: [Interno]
+      summary: Registrar una llamada en api_log (lo usa el middleware de Go)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [endpoint, http_status, latency_ms]
+              properties:
+                client_id: { type: integer }
+                environment: { type: string }
+                endpoint: { type: string }
+                http_status: { type: integer }
+                latency_ms: { type: integer }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+
+components:
+  securitySchemes:
+    serviceToken:
+      type: apiKey
+      in: header
+      name: X-Service-Token
+      description: "Token compartido Go↔ORDS (app_parameter.SERVICE_TOKEN)."
+
+  responses:
+    Unauthorized:
+      description: No autenticado / token inválido
+      content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } }
+    Forbidden:
+      description: Sin permiso
+      content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } }
+
+  schemas:
+    Envelope:
+      type: object
+      description: Envelope estándar de éxito.
+      properties:
+        success: { type: boolean, example: true }
+        data: { nullable: true, description: Objeto o arreglo con el resultado }
+        error: { nullable: true, example: null }
+        meta:
+          type: object
+          nullable: true
+          properties:
+            page: { type: integer }
+            pageSize: { type: integer }
+            total: { type: integer }
+      required: [success]
+
+    ErrorEnvelope:
+      type: object
+      properties:
+        success: { type: boolean, example: false }
+        data: { nullable: true, example: null }
+        error:
+          type: object
+          properties:
+            code: { type: string, example: "UNAUTHORIZED" }
+            message: { type: string, example: "token de servicio inválido" }
+      required: [success, error]
+
+    EnvironmentRequest:
+      type: object
+      description: El CSC llega YA cifrado (hex) por Go; ORDS nunca ve el claro.
+      properties:
+        environment: { type: string, enum: [TEST, PROD] }
+        num_timbrado: { type: string, example: "06038964" }
+        fecha_inicio_vigencia: { type: string, format: date, example: "2026-07-09" }
+        id_csc: { type: string, example: "0001" }
+        csc_ciphertext: { type: string, description: hex }
+        csc_nonce: { type: string, description: hex }
+        key_version: { type: integer, example: 1 }
+
+    CertificateRequest:
+      type: object
+      description: P12 y password YA cifrados (AES-256-GCM) por Go.
+      properties:
+        subject_dn: { type: string }
+        not_after: { type: string, format: date-time }
+        p12_ciphertext: { type: string, description: hex }
+        p12_nonce: { type: string, description: hex }
+        pwd_ciphertext: { type: string, description: hex }
+        pwd_nonce: { type: string, description: hex }
+        key_version: { type: integer, example: 1 }
+      required: [p12_ciphertext, p12_nonce, pwd_ciphertext, pwd_nonce]

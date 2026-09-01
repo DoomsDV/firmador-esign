@@ -5,14 +5,22 @@ import "github.com/shopspring/decimal"
 // createDocumentRequest es el payload de POST /v1/documents. Los montos usan
 // decimal.Decimal (acepta número o string en JSON sin perder precisión).
 type createDocumentRequest struct {
-	Tipo           string          `json:"tipo"`      // fe | nce | nde
-	Condicion      string          `json:"condicion"` // contado | credito
-	Plazo          string          `json:"plazo"`     // días (crédito a plazo); default "30"
-	DatosOperacion datosOperacion  `json:"datos_operacion"`
-	Receptor       receptorRequest `json:"receptor"`
-	Moneda         string          `json:"moneda"`
+	Tipo           string           `json:"tipo"`      // fe | nce | nde
+	Condicion      string           `json:"condicion"` // contado | credito
+	Plazo          string           `json:"plazo"`     // días (crédito a plazo); default "30"
+	DatosOperacion datosOperacion   `json:"datos_operacion"`
+	Receptor       receptorRequest  `json:"receptor"`
+	Moneda         string           `json:"moneda"`
 	TipoCambio     *decimal.Decimal `json:"tipoCambio"`
-	Items          []itemRequest   `json:"items"`
+	Items          []itemRequest    `json:"items"`
+
+	// Opcionales FE (defaults: mercadería / presencial / efectivo).
+	TipoTransaccion    int    `json:"tipoTransaccion"`    // iTipTra; 2=Prestación de servicios
+	DesTipoTransaccion string `json:"desTipoTransaccion"` // dDesTipTra
+	IndPres            int    `json:"indPres"`            // iIndPres; 3=electrónica/internet
+	DesIndPres         string `json:"desIndPres"`
+	MedioPago          int    `json:"medioPago"` // iTiPago en contado; 3=tarjeta crédito
+	DesMedioPago       string `json:"desMedioPago"`
 
 	// NCE / NDE
 	CdcRef string `json:"cdcRef"`
@@ -27,11 +35,11 @@ type datosOperacion struct {
 type receptorRequest struct {
 	Tipo               string      `json:"tipo"` // ci | ruc | innominado | extranjero
 	Documento          string      `json:"documento"`
-	DV                 int         `json:"dv"`                 // RUC receptor
-	TipoContribuyente  int         `json:"tipoContribuyente"`  // 1 física, 2 jurídica (RUC)
-	TipoOperacion      int         `json:"tipoOperacion"`      // iTiOpe (RUC): 1 B2B, 2 B2C...
+	DV                 int         `json:"dv"`                // RUC receptor
+	TipoContribuyente  int         `json:"tipoContribuyente"` // 1 física, 2 jurídica (RUC)
+	TipoOperacion      int         `json:"tipoOperacion"`     // iTiOpe (RUC): 1 B2B, 2 B2C...
 	Nombre             string      `json:"nombre"`
-	Pais               string      `json:"pais"`               // extranjero (ISO-3 ≠ PRY)
+	Pais               string      `json:"pais"` // extranjero (ISO-3 ≠ PRY)
 	DesPais            string      `json:"desPais"`
 	TipoIdentificacion int         `json:"tipoIdentificacion"` // extranjero (iTipIDRec)
 	Geo                *geoRequest `json:"geo"`
@@ -72,6 +80,15 @@ type documentResponse struct {
 	QR              string `json:"qr,omitempty"`
 	NumeroDocumento string `json:"numeroDocumento"`
 	Ambiente        string `json:"ambiente"`
+}
+
+// kudeResponse es el resultado de GET /v1/documents/{cdc}/kude. La generación
+// del PDF es asíncrona (Gotenberg + subida a OCI tras el POST /v1/documents),
+// por eso puede llegar en estado "pending" antes de tener kudeUrl.
+type kudeResponse struct {
+	CDC     string `json:"cdc"`
+	Estado  string `json:"estado"` // pending | ready
+	KudeURL string `json:"kudeUrl,omitempty"`
 }
 
 // cancelRequest es el body de POST /v1/documents/{cdc}/cancel.

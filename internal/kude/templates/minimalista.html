@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>KuDE {{ .CDC }}</title>
+<style>
+  @page { size: A4; margin: 16mm; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    font-size: 10px;
+    color: #1e293b;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .leyenda-prueba {
+    text-align: center;
+    background: #fef3c7;
+    color: #92400e;
+    font-weight: 700;
+    font-size: 9px;
+    letter-spacing: .03em;
+    padding: 4px 0;
+    margin-bottom: 16px;
+    border-radius: 3px;
+  }
+
+  .header { display: flex; justify-content: space-between; align-items: flex-start; }
+  .header .logo-wrap {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    max-width: 176px;
+    height: 64px;
+  }
+  .header .logo { max-height: 100%; max-width: 100%; width: auto; height: auto; object-fit: contain; object-position: left center; display: block; }
+  .header .marca { font-size: 13px; font-weight: 700; color: #0f172a; }
+  .header .datos-emisor { text-align: right; }
+  .header .datos-emisor p { margin: 1px 0; font-size: 10px; color: #64748b; }
+  .header .datos-emisor .nombre { font-size: 11px; color: #0f172a; font-weight: 700; margin-bottom: 1px; }
+  .header .datos-emisor .razon-social { font-style: italic; }
+
+  .titulo-doc { margin-top: 24px; }
+  .titulo-doc h1 { margin: 0; font-size: 20px; font-weight: 800; color: #0f172a; letter-spacing: -.01em; }
+  .titulo-doc .numdoc { margin-top: 4px; font-size: 12px; color: #64748b; }
+
+  .detalles { display: flex; gap: 32px; margin-top: 20px; margin-bottom: 18px; }
+  .detalles .col { flex: 1; min-width: 0; }
+  .detalles .label { font-size: 9px; text-transform: uppercase; letter-spacing: .06em; color: #64748b; font-weight: 600; margin-bottom: 6px; }
+  .detalles .cliente .nombre { font-size: 11px; font-weight: 700; color: #0f172a; margin-bottom: 2px; }
+  .detalles .cliente p { margin: 1px 0; font-size: 10px; color: #64748b; }
+  .detalles .fila {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 5px 0;
+    border-bottom: 1px solid #e2e8f0;
+    font-size: 10px;
+  }
+  .detalles .fila .k { color: #64748b; }
+  .detalles .fila .v { color: #0f172a; font-weight: 600; text-align: right; }
+
+  table.items { width: 100%; border-collapse: collapse; margin-top: 16px; margin-bottom: 4px; }
+  table.items thead th {
+    border-bottom-width: 2px;
+    border-bottom-style: solid;
+    border-bottom-color: {{ .ColorPrimario }};
+    color: #64748b;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    font-weight: 700;
+    padding: 0 0 6px;
+    text-align: left;
+  }
+  table.items thead th.num { text-align: right; }
+  table.items tbody td { padding: 8px 0; border-bottom: 1px solid #e2e8f0; font-size: 10px; }
+  table.items tbody td.num { text-align: right; white-space: nowrap; }
+  table.items .iva-hint { color: #64748b; }
+
+  .resumen { display: flex; justify-content: flex-end; margin-top: 8px; }
+  .resumen-inner { min-width: 170px; font-size: 10px; }
+  .resumen-inner .fila { display: flex; justify-content: space-between; padding: 4px 0; color: #64748b; }
+  .resumen-inner .total {
+    display: flex;
+    justify-content: space-between;
+    padding-top: 8px;
+    margin-top: 4px;
+    border-top-width: 2px;
+    border-top-style: solid;
+    border-top-color: {{ .ColorPrimario }};
+    font-size: 14px;
+    font-weight: 800;
+  }
+  .resumen-inner .total .k { color: #0f172a; }
+  .resumen-inner .total .v { color: {{ .ColorPrimario }}; }
+
+  .iva-line {
+    margin-top: 6px;
+    text-align: right;
+    font-size: 9px;
+    color: #64748b;
+    white-space: nowrap;
+  }
+
+  .footer {
+    margin-top: 16px;
+    border-top: 1px solid #e2e8f0;
+    padding-top: 14px;
+  }
+  .footer-inner { display: flex; align-items: flex-start; gap: 12px; }
+  .footer .qr img { width: 52px; height: 52px; display: block; }
+  .footer-text { flex: 1; min-width: 0; font-size: 10px; line-height: 1.35; color: #64748b; }
+  .footer-text .cdc { font-family: ui-monospace, monospace; letter-spacing: .03em; color: #64748b; margin: 0; }
+  .footer-text .url { margin: 4px 0 0; word-break: break-all; }
+  .footer-text .legal { margin: 6px 0 0; }
+  .footer-text .notas { margin: 6px 0 0; text-transform: none; }
+  table.items tbody tr { page-break-inside: avoid; }
+  .footer { page-break-inside: avoid; }
+</style>
+</head>
+<body>
+  {{ if .MostrarLeyendaPrueba }}<div class="leyenda-prueba">{{ .LeyendaPrueba }}</div>{{ end }}
+
+  <div class="header">
+    <div>
+      {{ if .LogoURL }}<div class="logo-wrap"><img class="logo" src="{{ .LogoURL }}" alt="Logo del emisor"></div>{{ end }}
+    </div>
+    <div class="datos-emisor">
+      {{ if and .MostrarFantasia .Emisor.Fantasia }}
+      <div class="nombre">{{ .Emisor.Fantasia }}</div>
+      <p class="razon-social">{{ .Emisor.Nombre }}</p>
+      {{ else }}
+      <div class="nombre">{{ .Emisor.Nombre }}</div>
+      {{ end }}
+      <p>RUC {{ .Emisor.RUC }}</p>
+      {{ if .Emisor.Ciudad }}<p>{{ .Emisor.Ciudad }}</p>{{ else if .Emisor.Direccion }}<p>{{ .Emisor.Direccion }}</p>{{ end }}
+    </div>
+  </div>
+
+  <div class="titulo-doc">
+    <h1>{{ .Timbrado.TipoDocDesc }}</h1>
+    <div class="numdoc">N° {{ .Timbrado.Establecimiento }}-{{ .Timbrado.PuntoExp }}-{{ .Timbrado.NumeroDoc }}</div>
+  </div>
+
+  <div class="detalles">
+    <div class="col cliente">
+      <div class="label">Facturar a</div>
+      <div class="nombre">{{ .Receptor.Nombre }}</div>
+      {{ if .Receptor.Identificacion }}<p>{{ .Receptor.Identificacion }}</p>{{ end }}
+      {{ if .Receptor.Direccion }}<p>{{ .Receptor.Direccion }}</p>{{ end }}
+    </div>
+    <div class="col">
+      <div class="fila"><span class="k">Timbrado N°</span><span class="v">{{ .Timbrado.NumTimbrado }}</span></div>
+      <div class="fila"><span class="k">Vigente desde</span><span class="v">{{ .Timbrado.FeIniT }}</span></div>
+      <div class="fila"><span class="k">Fecha de emisión</span><span class="v">{{ .FechaEmision }}</span></div>
+      {{ if .Condicion }}<div class="fila"><span class="k">Condición</span><span class="v">{{ .Condicion }}</span></div>{{ end }}
+    </div>
+  </div>
+
+  <table class="items">
+    <thead>
+      <tr>
+        <th>Descripción</th>
+        <th class="num">Cant.</th>
+        <th class="num">Precio unit.</th>
+        <th class="num">Total</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{ range .Items }}
+      <tr>
+        <td>{{ .Descripcion }}{{ if .IVAHint }} <span class="iva-hint">({{ .IVAHint }})</span>{{ end }}</td>
+        <td class="num">{{ .Cantidad }}</td>
+        <td class="num">{{ .PrecioUnitario }}</td>
+        <td class="num">{{ .Total }}</td>
+      </tr>
+      {{ end }}
+    </tbody>
+  </table>
+
+  {{ if .Totales }}
+  <div class="resumen">
+    <div class="resumen-inner">
+      <div class="fila"><span>Subtotal</span><span>{{ .Totales.TotOpe }}</span></div>
+      <div class="total"><span class="k">Total {{ .Totales.Moneda }}</span><span class="v">{{ .Totales.TotGralOpe }}</span></div>
+      {{ if .Totales.TotalGs }}<div class="fila"><span>Total Gs.</span><span>{{ .Totales.TotalGs }}</span></div>{{ end }}
+    </div>
+  </div>
+  <p class="iva-line">Liquidación de IVA: Exento: 0 | 5%: {{ .Totales.TotIVA5 }} | 10%: {{ .Totales.TotIVA10 }} | Total IVA: {{ .Totales.TotIVA }}</p>
+  {{ end }}
+
+  <div class="footer">
+    <div class="footer-inner">
+      <div class="qr"><img src="data:image/png;base64,{{ .QRBase64 }}" alt="QR"></div>
+      <div class="footer-text">
+        <p class="cdc">CDC: {{ .CDC }}</p>
+        <p class="url">{{ .URLConsulta }}</p>
+        <p class="legal">{{ .LeyendaLegal }}</p>
+        {{ if .NotasFooter }}<p class="notas">{{ .NotasFooter }}</p>{{ end }}
+      </div>
+    </div>
+  </div>
+</body>
+</html>

@@ -2,7 +2,11 @@
 
 Versión: `v1` · Estado: diseño para el frontend futuro + referencia del backend ya implementado.
 
-> También disponible como especificación **OpenAPI 3.0** en [`docs/openapi.yaml`](./openapi.yaml), abrible en Swagger UI / Redoc para documentación interactiva y generación de clientes.
+> **Guía rápida (URLs, tokens, JSON de ejemplo):** [`guia-integracion-api.md`](./guia-integracion-api.md)  
+> Especificaciones **OpenAPI 3.0** (tres planos independientes — ver [`openapi/README.md`](./openapi/README.md)):
+> - Emisión (integradores): [`openapi-emision.yaml`](./openapi-emision.yaml)
+> - Panel (frontend esign): [`openapi-panel.yaml`](./openapi-panel.yaml)
+> - Interno Go↔ORDS: [`openapi-internal.yaml`](./openapi-internal.yaml)
 
 Este documento describe los **tres planos** de la plataforma:
 
@@ -14,7 +18,7 @@ Este documento describe los **tres planos** de la plataforma:
 
 Donde:
 - `{ORDS}` = `https://g9549f707e8ebfa-aoxdev.adb.sa-saopaulo-1.oraclecloudapps.com/ords/esign`
-- `{GO}` = host del servidor Go (`SERVER_ADDR`, p. ej. `http://localhost:8080`).
+- `{GO}` = `https://api-staging.etick.uno` (homologación) o `https://api.etick.uno` (producción)
 
 El **ambiente SIFEN** (test/prod) NO se pasa por parámetro en el plano de emisión: lo determina exclusivamente el **prefijo de la API key** (`sk_test_` → SIFEN-test, `sk_prod_` → SIFEN-prod). Una key de test jamás puede pegarle a prod y viceversa (guardrail `AssertSafeURL`).
 
@@ -204,8 +208,16 @@ Cada establecimiento (sucursal) tiene su propia dirección/geo (va en `gEmis` de
 
 | Método | Ruta | Rol | Descripción |
 |---|---|---|---|
-| `GET` | `/api/v1/environments/{test\|prod}` | owner | Timbrado, dFeIniT, IdCSC (nunca el CSC en claro) |
+| `GET` | `/api/v1/environments/{test\|prod}` | owner | Timbrado, dFeIniT, IdCSC (nunca el CSC en claro) — **implementado** |
 | `PUT` | `/api/v1/environments` | owner | Upsert del ambiente (timbrado + CSC cifrado) |
+
+**`GET /environments/test`** — response (ambiente configurado):
+
+```json
+{ "success": true, "data": { "num_timbrado": "06038964", "fecha_inicio_vigencia": "2026-07-09", "id_csc": "0001", "key_version": 1, "has_csc": true } }
+```
+
+Si el ambiente todavía no fue configurado, `data` viene ausente/`null` (el panel lo interpreta como formulario vacío, no como error). El CSC (ni cifrado) nunca se expone por este endpoint.
 
 **`PUT /environments`** — request (el CSC llega **ya cifrado** en hex por el cliente/Go; ORDS nunca ve el claro):
 
@@ -233,13 +245,13 @@ Las keys se guardan en la tabla hija `client_api_key` (rotables, con historial).
 **`GET /api-keys`** — response:
 
 ```json
-{ "success": true, "data": { "keys": [ { "environment": "TEST", "prefix": "sk_test_ac41", "status": "ACTIVE", "label": "seed", "created_at": "2026-07-25T21:53:27-03:00" } ] } }
+{ "success": true, "data": { "keys": [ { "environment": "TEST", "prefix": "<sk_test_…>", "status": "ACTIVE", "label": "seed", "created_at": "2026-07-25T21:53:27-03:00" } ] } }
 ```
 
 **`POST /api-keys/test/rotate`** — response (única vez que se ve la key completa):
 
 ```json
-{ "success": true, "data": { "api_key": "sk_test_ABCD…", "prefix": "sk_test_ABCD", "environment": "TEST" } }
+{ "success": true, "data": { "api_key": "<key completa al rotar>", "prefix": "<sk_test_…>", "environment": "TEST" } }
 ```
 
 ### 3.6 Certificado
@@ -284,6 +296,50 @@ Query params de `GET /documents`: `environment`, `estado`, `tipo`, `desde`, `has
   "meta": { "page": 1, "pageSize": 25, "total": 1 }
 }
 ```
+
+### 3.8 Diseño del KuDE (branding)
+
+| Método | Ruta | Rol | Descripción |
+|---|---|---|---|
+| `GET` | `/api/v1/kude-config` | cualquiera | Plantilla, color, logo URL, footer, `mostrar_fantasia` |
+| `PUT` | `/api/v1/kude-config` | owner | Upsert de branding (sin logo) |
+| `POST` | `/api/v1/kude-config/logo` | owner | Sube logo al bucket OCI (`image_hex` + `mime_type`) |
+
+**`GET /kude-config`** — response:
+
+```json
+{
+  "success": true,
+  "data": {
+    "template_id": "minimalista",
+    "color_primario": "#0f172a",
+    "logo_url": "https://…/logo.png",
+    "notas_footer": "Gracias por su compra",
+    "mostrar_fantasia": 1
+  }
+}
+```
+
+**`PUT /kude-config`** — request:
+
+```json
+{
+  "template_id": "corporativa",
+  "color_primario": "#0f172a",
+  "notas_footer": "KuDE — Comprobante Único de DE",
+  "mostrar_fantasia": 0
+}
+```
+
+`mostrar_fantasia`: `1` = mostrar nombre de fantasía en el encabezado del PDF (si existe en emisor); `0` = solo razón social. Default `1`.
+
+**`POST /kude-config/logo`** — request:
+
+```json
+{ "image_hex": "<hex>", "mime_type": "image/png" }
+```
+
+El PDF KuDE se genera en Go al emitir un documento; usa esta config + datos del DE firmado.
 
 ---
 
@@ -428,7 +484,7 @@ Consumido **solo** por el servicio Go. Cada handler valida `X-Service-Token` con
 
 | Método | Ruta | In | Out |
 |---|---|---|---|
-| `POST` | `/internal/v1/context` | `{ "api_key": "sk_test_…" }` | client_id, environment, emisor, establecimientos/puntos, timbrado/CSC id, `cert_available` |
+| `POST` | `/internal/v1/context` | `{ "api_key": "<API key>" }` | client_id, environment, emisor, establecimientos/puntos, timbrado/CSC id, `cert_available` |
 | `POST` | `/internal/v1/next-number` | `{ client_id, environment, establecimiento, punto_expedicion, tipo_de }` | `{ "number": N }` correlativo con bloqueo |
 | `POST` | `/internal/v1/certificate` | `{ client_id }` | blobs cifrados (hex) + `key_version` |
 | `POST` | `/internal/v1/csc` | `{ client_id, environment }` | CSC cifrado (hex) + `id_csc` + `key_version` |

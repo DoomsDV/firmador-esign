@@ -1,13 +1,18 @@
-// Package kude genera la representación gráfica (KuDE) de un documento
-// electrónico en formato PDF, con el QR embebido, según el Manual Técnico.
+// Package kude arma los datos y el HTML de la representación gráfica (KuDE) de un
+// documento electrónico, con branding por cliente (plantilla/color/logo). El HTML
+// resultante se convierte a PDF externamente vía Gotenberg (ver internal/gotenberg);
+// este paquete no genera bytes de PDF.
 package kude
 
 import (
 	"bytes"
+	"embed"
+	"encoding/base64"
 	"fmt"
+	"html/template"
 	"strings"
+	"time"
 
-	"github.com/go-pdf/fpdf"
 	"github.com/shopspring/decimal"
 	qrcode "github.com/skip2/go-qrcode"
 
@@ -17,14 +22,119 @@ import (
 // leyendaPrueba es la advertencia obligatoria en ambiente de homologación.
 const leyendaPrueba = "DOCUMENTO GENERADO EN AMBIENTE DE PRUEBA - SIN VALOR COMERCIAL NI FISCAL"
 
-// RenderKuDE construye el PDF del KuDE a partir del rDE firmado y la URL del QR
-// (dCarQR). El resultado son los bytes del PDF listos para escribir o servir.
-func RenderKuDE(rde *sifen.RDE, qrURL string) ([]byte, error) {
+// leyendaLegalKuDE es la leyenda normativa del pie (Manual Tecnico / preview del panel).
+const leyendaLegalKuDE = "ESTE DOCUMENTO ES UNA REPRESENTACIÓN GRÁFICA DE UN DOCUMENTO ELECTRÓNICO (XML)"
+
+const (
+	TemplateMinimalista = "minimalista"
+	TemplateCorporativa = "corporativa"
+)
+
+//go:embed templates/*.html
+var templatesFS embed.FS
+
+// Branding son las preferencias visuales del cliente (client_kude_config), leídas
+// por Go a través del contexto del tenant (tenant.KudeConfig).
+type Branding struct {
+	TemplateID      string
+	ColorPrimario   string
+	LogoURL         string
+	NotasFooter     string
+	MostrarFantasia bool
+}
+
+// KudeData es el modelo, ya formateado para mostrar, que consume la plantilla HTML.
+// Se construye una sola vez (BuildKudeData) a partir del rDE firmado; de ahí en más
+// es un valor inmutable seguro de pasar entre goroutines (a diferencia del *RDE).
+type KudeData struct {
+	TemplateID           string
+	ColorPrimario        string
+	LogoURL              string
+	NotasFooter          string
+	MostrarFantasia      bool
+	MostrarLeyendaPrueba bool
+	LeyendaPrueba string
+
+	CDC          string // formateado en grupos de 4
+	FechaEmision string
+	Condicion    string
+	Moneda       string
+	MonedaDesc   string
+	TipoCambio   string // "" si moneda PYG o no informado
+
+	Emisor   KudeEmisor
+	Timbrado KudeTimbrado
+	Receptor KudeReceptor
+	Items    []KudeItem
+	Totales  *KudeTotales // nil en nota de remisión (no lleva gTotSub)
+
+	QRURL    string
+	QRBase64 string // imagen PNG del QR, en base64 (sin el prefijo data:)
+	URLConsulta string // URL del portal e-Kuatia (sin query del QR)
+	LeyendaLegal string
+}
+
+type KudeEmisor struct {
+	Nombre     string
+	Fantasia   string
+	RUC        string
+	Direccion  string
+	Ciudad     string // ciudad emisor (minimalista: pie de membrete derecho)
+	Telefono   string
+	Email      string
+	Actividad  string
+}
+
+type KudeTimbrado struct {
+	NumTimbrado     string
+	FeIniT          string
+	TipoDocDesc     string
+	Establecimiento string
+	PuntoExp        string
+	NumeroDoc       string
+}
+
+type KudeReceptor struct {
+	Nombre         string
+	Identificacion string
+	Direccion      string // "" si el DE no la informa (dDirRec es omitempty)
+	Telefono       string
+	Email          string
+}
+
+type KudeItem struct {
+	Codigo         string
+	Descripcion    string
+	Cantidad       string
+	PrecioUnitario string
+	TasaIVA        string
+	IVAHint        string // texto inline en descripción: "IVA 10%", "Exento", etc.
+	Total          string
+}
+
+type KudeTotales struct {
+	Moneda     string
+	SubExe     string
+	SubExo     string
+	Sub5       string
+	Sub10      string
+	TotOpe     string
+	TotIVA5    string
+	TotIVA10   string
+	TotIVA     string
+	TotGralOpe string
+	TotalGs    string // "" si la moneda es PYG
+}
+
+// BuildKudeData extrae del rDE firmado (y del branding del tenant) el modelo listo
+// para renderizar. No muta rde; el resultado es inmutable y puede cruzarse a otra
+// goroutine sin compartir el *etree.Document del pipeline de firma.
+func BuildKudeData(rde *sifen.RDE, qrURL string, ambiente string, b Branding) (KudeData, error) {
 	if rde == nil || rde.DE == nil {
-		return nil, fmt.Errorf("rDE/DE nulo")
+		return KudeData{}, fmt.Errorf("rDE/DE nulo")
 	}
 	if qrURL == "" {
-		return nil, fmt.Errorf("qrURL vacío: el KuDE requiere el dCarQR")
+		return KudeData{}, fmt.Errorf("qrURL vacío: el KuDE requiere el dCarQR")
 	}
 
 	de := rde.DE
@@ -33,187 +143,241 @@ func RenderKuDE(rde *sifen.RDE, qrURL string) ([]byte, error) {
 	rec := de.GDatGralOpe.GDatRec
 	tot := de.GTotSub
 	moneda := "PYG"
-	if de.GDatGralOpe.GOpeCom != nil && de.GDatGralOpe.GOpeCom.CMoneOpe != "" {
-		moneda = de.GDatGralOpe.GOpeCom.CMoneOpe
+	monedaDesc := "Guarani"
+	var tipoCambio string
+	if de.GDatGralOpe.GOpeCom != nil {
+		oc := de.GDatGralOpe.GOpeCom
+		if oc.CMoneOpe != "" {
+			moneda = oc.CMoneOpe
+		}
+		if oc.DDesMoneOpe != "" {
+			monedaDesc = oc.DDesMoneOpe
+		}
+		if oc.DTiCam != nil && !strings.EqualFold(moneda, "PYG") {
+			tipoCambio = oc.DTiCam.StringFixed(2)
+		}
 	}
 
-	pdf := fpdf.New("P", "mm", "A4", "")
-	pdf.SetTitle("KuDE "+de.Id, true)
-	pdf.SetMargins(12, 12, 12)
-	pdf.SetAutoPageBreak(true, 12)
-	pdf.AddPage()
-	tr := pdf.UnicodeTranslatorFromDescriptor("") // UTF-8 -> cp1252
+	qrPNG, err := qrcode.Encode(qrURL, qrcode.Medium, 256)
+	if err != nil {
+		return KudeData{}, fmt.Errorf("generar QR: %w", err)
+	}
 
-	writeHeader(pdf, tr, emis, timb)
-	writeCDC(pdf, tr, de.Id, qrURL)
-	writeReceptor(pdf, tr, de, rec)
-	writeItems(pdf, tr, de.GDtipDE.GCamItem, moneda)
-	if tot != nil {
-		writeTotales(pdf, tr, *tot, moneda) // la remisión no informa gTotSub
+	templateID := strings.TrimSpace(b.TemplateID)
+	if templateID != TemplateCorporativa {
+		templateID = TemplateMinimalista
 	}
-	if err := writeQR(pdf, qrURL); err != nil {
-		return nil, err
+	color := strings.TrimSpace(b.ColorPrimario)
+	if color == "" {
+		color = "#0f172a"
 	}
-	writeLeyendas(pdf, tr)
 
-	var buf bytes.Buffer
-	if err := pdf.Output(&buf); err != nil {
-		return nil, fmt.Errorf("generar PDF KuDE: %w", err)
-	}
-	return buf.Bytes(), nil
-}
-
-func writeHeader(pdf *fpdf.Fpdf, tr func(string) string, e sifen.GEmis, t sifen.GTimb) {
-	pdf.SetFont("Arial", "B", 13)
-	pdf.CellFormat(120, 7, tr(e.DNomEmi), "", 0, "L", false, 0, "")
-
-	// Recuadro de timbrado a la derecha.
-	x, y := 135, 12.0
-	pdf.SetXY(float64(x), y)
-	pdf.SetFont("Arial", "B", 9)
-	pdf.MultiCell(63, 4.5, tr(fmt.Sprintf(
-		"RUC: %s-%d\nTimbrado Nº: %s\nInicio vigencia: %s\n%s\n%s-%s Nº %s",
-		e.DRucEm, e.DDVEmi, t.DNumTim, t.DFeIniT, t.DDesTiDE, t.DEst, t.DPunExp, t.DNumDoc,
-	)), "1", "L", false)
-
-	pdf.SetXY(12, 20)
-	pdf.SetFont("Arial", "", 9)
-	dir := e.DDirEmi
-	if e.DNumCas != "" && e.DNumCas != "0" {
-		dir += " " + e.DNumCas
-	}
-	lineas := []string{
-		"Dirección: " + dir,
-	}
-	if e.DTelEmi != "" {
-		lineas = append(lineas, "Teléfono: "+e.DTelEmi)
-	}
-	if e.DEmailE != "" {
-		lineas = append(lineas, "Email: "+e.DEmailE)
-	}
-	if len(e.GActEco) > 0 {
-		lineas = append(lineas, "Actividad: "+e.GActEco[0].DDesActEco)
-	}
-	pdf.MultiCell(120, 4.5, tr(strings.Join(lineas, "\n")), "", "L", false)
-	pdf.Ln(2)
-}
-
-func writeCDC(pdf *fpdf.Fpdf, tr func(string) string, cdc, _ string) {
-	pdf.SetFont("Arial", "B", 8)
-	pdf.CellFormat(0, 5, tr("CDC: "+formatCDC(cdc)), "T", 1, "L", false, 0, "")
-}
-
-func writeReceptor(pdf *fpdf.Fpdf, tr func(string) string, de *sifen.DE, r sifen.GDatRec) {
-	pdf.SetFont("Arial", "", 9)
-	id := "RUC " + r.DRucRec
-	if r.DRucRec == "" {
-		id = r.DDTipIDRec + " " + r.DNumIDRec
-	}
-	cond := "Contado"
+	condicion := ""
 	if de.GDtipDE.GCamCond != nil {
-		cond = de.GDtipDE.GCamCond.DDCondOpe
+		condicion = de.GDtipDE.GCamCond.DDCondOpe
 	}
-	pdf.MultiCell(0, 4.5, tr(fmt.Sprintf(
-		"Fecha de emisión: %s\nCliente: %s\nIdentificación: %s\nCondición de venta: %s",
-		de.GDatGralOpe.DFeEmiDE, r.DNomRec, id, cond,
-	)), "", "L", false)
-	pdf.Ln(1)
-}
 
-func writeItems(pdf *fpdf.Fpdf, tr func(string) string, items []sifen.GCamItem, moneda string) {
-	pdf.SetFont("Arial", "B", 8)
-	pdf.SetFillColor(230, 230, 230)
-	headers := []struct {
-		w float64
-		t string
-	}{
-		{18, "Código"}, {78, "Descripción"}, {14, "Cant."},
-		{28, "P. Unit."}, {14, "IVA %"}, {30, "Total"},
-	}
-	for _, h := range headers {
-		pdf.CellFormat(h.w, 6, tr(h.t), "1", 0, "C", true, 0, "")
-	}
-	pdf.Ln(-1)
-
-	pdf.SetFont("Arial", "", 8)
-	for _, it := range items {
-		total := effectiveTotOpe(it)
-		var pUni, tasa string
+	items := make([]KudeItem, 0, len(de.GDtipDE.GCamItem))
+	for _, it := range de.GDtipDE.GCamItem {
+		var pUni, tasa, ivaHint string
 		if it.GValorItem != nil {
 			pUni = fmtMonto(it.GValorItem.DPUniProSer, moneda)
 		}
 		if it.GCamIVA != nil {
 			tasa = it.GCamIVA.DTasaIVA.String()
+			switch it.GCamIVA.IAfecIVA {
+			case 1, 4:
+				if it.GCamIVA.DTasaIVA.IsPositive() {
+					ivaHint = "IVA " + tasa + "%"
+				}
+			case 2:
+				ivaHint = "Exonerado"
+			case 3:
+				ivaHint = "Exento"
+			}
 		}
-		pdf.CellFormat(18, 5, tr(it.DCodInt), "1", 0, "L", false, 0, "")
-		pdf.CellFormat(78, 5, tr(truncate(it.DDesProSer, 60)), "1", 0, "L", false, 0, "")
-		pdf.CellFormat(14, 5, tr(it.DCantProSer.String()), "1", 0, "R", false, 0, "")
-		pdf.CellFormat(28, 5, tr(pUni), "1", 0, "R", false, 0, "")
-		pdf.CellFormat(14, 5, tr(tasa), "1", 0, "R", false, 0, "")
-		pdf.CellFormat(30, 5, tr(fmtMonto(total, moneda)), "1", 0, "R", false, 0, "")
-		pdf.Ln(-1)
+		items = append(items, KudeItem{
+			Codigo:         it.DCodInt,
+			Descripcion:    it.DDesProSer,
+			Cantidad:       it.DCantProSer.String(),
+			PrecioUnitario: pUni,
+			TasaIVA:        tasa,
+			IVAHint:        ivaHint,
+			Total:          fmtMonto(effectiveTotOpe(it), moneda),
+		})
 	}
-	pdf.Ln(1)
+
+	var totales *KudeTotales
+	if tot != nil {
+		totales = &KudeTotales{
+			Moneda:     moneda,
+			SubExe:     fmtMonto(tot.DSubExe, moneda),
+			SubExo:     fmtMonto(tot.DSubExo, moneda),
+			Sub5:       fmtMonto(tot.DSub5, moneda),
+			Sub10:      fmtMonto(tot.DSub10, moneda),
+			TotOpe:     fmtMonto(tot.DTotOpe, moneda),
+			TotIVA5:    fmtMonto(tot.DTotIVA5, moneda),
+			TotIVA10:   fmtMonto(tot.DTotIVA10, moneda),
+			TotIVA:     fmtMonto(tot.DTotIVA, moneda),
+			TotGralOpe: fmtMonto(tot.DTotGralOpe, moneda),
+		}
+		if tot.DTotalGs != nil {
+			totales.TotalGs = fmtMonto(*tot.DTotalGs, "PYG")
+		}
+	}
+
+	id := ""
+	if rec.DRucRec != "" {
+		id = fmt.Sprintf("RUC %s-%d", rec.DRucRec, rec.DDVRec)
+	} else if rec.DNumIDRec != "" {
+		id = strings.TrimSpace(rec.DDTipIDRec + " " + rec.DNumIDRec)
+	}
+
+	data := KudeData{
+		TemplateID:           templateID,
+		ColorPrimario:        color,
+		LogoURL:              strings.TrimSpace(b.LogoURL),
+		NotasFooter:          strings.TrimSpace(b.NotasFooter),
+		MostrarFantasia:      b.MostrarFantasia,
+		MostrarLeyendaPrueba: !strings.EqualFold(strings.TrimSpace(ambiente), "prod"),
+		LeyendaPrueba:        leyendaPrueba,
+		CDC:                  formatCDC(de.Id),
+		FechaEmision:         fmtFechaHoraDE(de.GDatGralOpe.DFeEmiDE),
+		Condicion:            condicion,
+		Moneda:               moneda,
+		MonedaDesc:           monedaDesc,
+		TipoCambio:           tipoCambio,
+		Emisor: KudeEmisor{
+			Nombre:    emis.DNomEmi,
+			Fantasia:  emis.DNomFanEmi,
+			RUC:       fmt.Sprintf("%s-%d", emis.DRucEm, emis.DDVEmi),
+			Direccion: emisDireccion(emis),
+			Ciudad:    emisCiudad(emis),
+			Telefono:  emis.DTelEmi,
+			Email:     emis.DEmailE,
+			Actividad: emisActividad(emis),
+		},
+		Timbrado: KudeTimbrado{
+			NumTimbrado:     timb.DNumTim,
+			FeIniT:          fmtFechaDE(timb.DFeIniT),
+			TipoDocDesc:     timb.DDesTiDE,
+			Establecimiento: timb.DEst,
+			PuntoExp:        timb.DPunExp,
+			NumeroDoc:       timb.DNumDoc,
+		},
+		Receptor: KudeReceptor{
+			Nombre:         rec.DNomRec,
+			Identificacion: id,
+			Direccion:      recDireccion(rec),
+			Telefono:       rec.DTelRec,
+			Email:          rec.DEmailRec,
+		},
+		Items:    items,
+		Totales:  totales,
+		QRURL:    qrURL,
+		QRBase64: base64.StdEncoding.EncodeToString(qrPNG),
+		URLConsulta: urlConsultaDisplay(qrURL),
+		LeyendaLegal: leyendaLegalKuDE,
+	}
+	return data, nil
 }
 
-func writeTotales(pdf *fpdf.Fpdf, tr func(string) string, t sifen.GTotSub, moneda string) {
-	pdf.SetFont("Arial", "", 9)
-	rows := [][2]string{
-		{"Subtotal exento", fmtMonto(t.DSubExe, moneda)},
-		{"Subtotal exonerado", fmtMonto(t.DSubExo, moneda)},
-		{"Subtotal gravado 5%", fmtMonto(t.DSub5, moneda)},
-		{"Subtotal gravado 10%", fmtMonto(t.DSub10, moneda)},
-		{"Total de la operación", fmtMonto(t.DTotOpe, moneda)},
-		{"Liquidación IVA 5%", fmtMonto(t.DTotIVA5, moneda)},
-		{"Liquidación IVA 10%", fmtMonto(t.DTotIVA10, moneda)},
-		{"Total IVA", fmtMonto(t.DTotIVA, moneda)},
+// RenderKuDEHTML ejecuta la plantilla Go (minimalista/corporativa) con los datos ya
+// formateados y devuelve el HTML final, listo para enviarse a Gotenberg.
+func RenderKuDEHTML(data KudeData) (string, error) {
+	name := data.TemplateID
+	if name != TemplateCorporativa {
+		name = TemplateMinimalista
 	}
-	for _, r := range rows {
-		pdf.CellFormat(124, 5, "", "", 0, "L", false, 0, "")
-		pdf.CellFormat(30, 5, tr(r[0]), "", 0, "R", false, 0, "")
-		pdf.CellFormat(30, 5, tr(r[1]), "", 1, "R", false, 0, "")
-	}
-	pdf.SetFont("Arial", "B", 10)
-	pdf.CellFormat(124, 6, "", "", 0, "L", false, 0, "")
-	pdf.CellFormat(30, 6, tr("TOTAL GENERAL"), "T", 0, "R", false, 0, "")
-	pdf.CellFormat(30, 6, tr(fmtMonto(t.DTotGralOpe, moneda)), "T", 1, "R", false, 0, "")
-	if t.DTotalGs != nil {
-		pdf.SetFont("Arial", "", 8)
-		pdf.CellFormat(124, 5, "", "", 0, "L", false, 0, "")
-		pdf.CellFormat(30, 5, tr("Total en Gs."), "", 0, "R", false, 0, "")
-		pdf.CellFormat(30, 5, tr(fmtMonto(*t.DTotalGs, "PYG")), "", 1, "R", false, 0, "")
-	}
-	pdf.Ln(2)
-}
-
-func writeQR(pdf *fpdf.Fpdf, qrURL string) error {
-	png, err := qrcode.Encode(qrURL, qrcode.Medium, 256)
+	tmpl, err := template.ParseFS(templatesFS, "templates/"+name+".html")
 	if err != nil {
-		return fmt.Errorf("generar QR: %w", err)
+		return "", fmt.Errorf("parsear plantilla %s: %w", name, err)
 	}
-	opt := fpdf.ImageOptions{ImageType: "PNG", ReadDpi: false}
-	pdf.RegisterImageOptionsReader("qr", opt, bytes.NewReader(png))
-	y := pdf.GetY()
-	pdf.ImageOptions("qr", 12, y, 32, 32, false, opt, 0, "")
-	return nil
-}
-
-func writeLeyendas(pdf *fpdf.Fpdf, tr func(string) string) {
-	y := pdf.GetY()
-	pdf.SetXY(48, y)
-	pdf.SetFont("Arial", "", 8)
-	pdf.MultiCell(110, 4, tr(
-		"Consulte la validez de este documento en:\n"+
-			"https://ekuatia.set.gov.py/consultas-test\n"+
-			"ingresando el CDC impreso arriba."), "", "L", false)
-	pdf.Ln(3)
-	pdf.SetFont("Arial", "B", 9)
-	pdf.SetTextColor(180, 0, 0)
-	pdf.MultiCell(0, 5, tr(leyendaPrueba), "1", "C", false)
-	pdf.SetTextColor(0, 0, 0)
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("renderizar plantilla %s: %w", name, err)
+	}
+	return buf.String(), nil
 }
 
 // --- helpers ---
+
+func emisDireccion(e sifen.GEmis) string {
+	dir := e.DDirEmi
+	if e.DNumCas != "" && e.DNumCas != "0" {
+		dir += " " + e.DNumCas
+	}
+	return dir
+}
+
+func emisCiudad(e sifen.GEmis) string {
+	parts := make([]string, 0, 2)
+	if e.DDesCiuEmi != "" {
+		parts = append(parts, e.DDesCiuEmi)
+	}
+	if e.DDesDepEmi != "" && !strings.EqualFold(e.DDesDepEmi, e.DDesCiuEmi) {
+		parts = append(parts, e.DDesDepEmi)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func urlConsultaDisplay(qrURL string) string {
+	u := strings.TrimSpace(qrURL)
+	if i := strings.Index(u, "?"); i > 0 {
+		u = u[:i]
+	}
+	if strings.HasSuffix(strings.ToLower(u), "/qr") {
+		u = u[:len(u)-3] + "/"
+	}
+	return u
+}
+
+func fmtFechaDE(iso string) string {
+	iso = strings.TrimSpace(iso)
+	if iso == "" {
+		return iso
+	}
+	if t, err := time.Parse("2006-01-02", iso); err == nil {
+		return t.Format("02/01/2006")
+	}
+	return iso
+}
+
+func fmtFechaHoraDE(iso string) string {
+	iso = strings.TrimSpace(iso)
+	if iso == "" {
+		return iso
+	}
+	layouts := []string{
+		"2006-01-02T15:04:05",
+		time.RFC3339,
+		"2006-01-02",
+	}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, iso); err == nil {
+			if layout == "2006-01-02" {
+				return t.Format("02/01/2006")
+			}
+			return t.Format("02/01/2006 15:04:05")
+		}
+	}
+	return iso
+}
+
+func recDireccion(r sifen.GDatRec) string {
+	dir := r.DDirRec
+	if r.DNumCasRec != "" && r.DNumCasRec != "0" {
+		dir += " " + r.DNumCasRec
+	}
+	return strings.TrimSpace(dir)
+}
+
+func emisActividad(e sifen.GEmis) string {
+	if len(e.GActEco) == 0 {
+		return ""
+	}
+	return e.GActEco[0].DDesActEco
+}
 
 func effectiveTotOpe(it sifen.GCamItem) decimal.Decimal {
 	if it.GValorItem == nil {
@@ -234,13 +398,6 @@ func formatCDC(cdc string) string {
 		b.WriteRune(r)
 	}
 	return b.String()
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n-1] + "…"
 }
 
 // fmtMonto formatea un monto con separador de miles y decimales según la moneda.

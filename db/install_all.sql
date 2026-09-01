@@ -25,6 +25,9 @@ PROMPT === Tablas ===
 @@tables/16_client_api_key.sql
 @@tables/17_client_certificate.sql
 @@tables/18_client_invitation.sql
+@@tables/19_client_kude_config.sql
+@@tables/20_document_idempotency.sql
+@@tables/21_document_kude_task.sql
 
 PROMPT === Paquete de sesion (requerido por el contexto) ===
 @@packages/PKG_ESIGN_SESSION.sql
@@ -34,8 +37,13 @@ PROMPT === Contexto de aplicacion + funciones de politica ===
 @@policies/02_fn_tenant_policy.sql
 
 PROMPT === Paquetes API ===
+-- PKG_ESIGN_BUCKET/PKG_ESIGN_KUDE_API van antes de PKG_ESIGN_CLIENT_API: este ultimo
+-- llama a pkg_esign_kude_api.fn_config_json() desde pr_get_internal_context.
 @@packages/PKG_ESIGN_HTTP.sql
 @@packages/PKG_ESIGN_UTIL.sql
+@@packages/PKG_ESIGN_BUCKET.sql
+@@packages/PKG_ESIGN_KUDE_API.sql
+@@packages/PKG_ESIGN_KUDE_TASK_API.sql
 @@packages/PKG_ESIGN_JWT.sql
 @@packages/PKG_ESIGN_AUTH_API.sql
 @@packages/PKG_ESIGN_CLIENT_API.sql
@@ -45,6 +53,11 @@ PROMPT === Paquetes API ===
 
 PROMPT === Aplicar politicas VPD (DBMS_RLS) ===
 @@policies/03_apply_policies.sql
+
+PROMPT === Migraciones incrementales ===
+@@migrations/20260831_document_xml_artifacts_kude_task.sql
+@@migrations/20260901_ords_internal_service_token.sql
+@@migrations/20260901_fiscal_resilience.sql
 
 PROMPT === Modulos ORDS ===
 @@ords/01_esign_module.sql

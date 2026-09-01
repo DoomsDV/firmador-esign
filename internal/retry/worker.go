@@ -5,12 +5,14 @@ package retry
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/DoomsDV/firmador-e/internal/kude"
 	"github.com/DoomsDV/firmador-e/internal/sifen"
 	"github.com/DoomsDV/firmador-e/internal/tenant"
 )
@@ -66,17 +68,14 @@ func (w *Worker) Start(ctx context.Context) {
 }
 
 func (w *Worker) cycle(ctx context.Context) {
-	docs, err := w.resolver.ORDS().ListPendingRetry(ctx, "flagged", w.cfg.Batch)
+	// "all" conserva prioridad para retry_requested en ORDS, pero también
+	// recupera un DE FIRMADO cuyo resultado SIFEN no se pudo persistir.
+	// Restringir el ciclo a "flagged" dejaría ese CDC sin reconciliar si hay
+	// otros reintentos explícitos en la cola.
+	docs, err := w.resolver.ORDS().ListPendingRetry(ctx, "all", w.cfg.Batch)
 	if err != nil {
-		log.Printf("⚠️  retry: listar flagged: %v", err)
+		log.Printf("⚠️  retry: listar pendientes: %v", err)
 		return
-	}
-	if len(docs) == 0 {
-		docs, err = w.resolver.ORDS().ListPendingRetry(ctx, "all", w.cfg.Batch)
-		if err != nil {
-			log.Printf("⚠️  retry: listar all: %v", err)
-			return
-		}
 	}
 	for i := range docs {
 		if ctx.Err() != nil {
@@ -90,7 +89,11 @@ func (w *Worker) cycle(ctx context.Context) {
 
 func (w *Worker) retryOne(ctx context.Context, doc *tenant.PendingRetryDoc) error {
 	if doc.RetryCount >= w.cfg.MaxRetry {
-		return fmt.Errorf("supera ESIGN_RETRY_MAX (%d)", w.cfg.MaxRetry)
+		reason := fmt.Sprintf("supera ESIGN_RETRY_MAX (%d)", w.cfg.MaxRetry)
+		if err := w.resolver.ORDS().MarkRetryReconciliationRequired(ctx, doc.ClientID, doc.CDC, reason); err != nil {
+			return fmt.Errorf("%s; marcar conciliación: %w", reason, err)
+		}
+		return fmt.Errorf("%s", reason)
 	}
 	if strings.TrimSpace(doc.XMLFirmado) == "" {
 		return fmt.Errorf("sin xml_firmado")
@@ -134,6 +137,12 @@ func (w *Worker) retryOne(ctx context.Context, doc *tenant.PendingRetryDoc) erro
 		return fmt.Errorf("persistir: %w", err)
 	}
 	log.Printf("✅ retry cdc=%s → %s (%s)", doc.CDC, estado, res.CodRes)
+
+	if estado == "APROBADO" {
+		if err := w.enqueueKude(ctx, doc); err != nil {
+			log.Printf("⚠️  retry cdc=%s: encolar KuDE: %v", doc.CDC, err)
+		}
+	}
 	return nil
 }
 
@@ -158,6 +167,41 @@ func (w *Worker) persist(ctx context.Context, doc *tenant.PendingRetryDoc, res s
 		CodRes:          res.CodRes,
 		ProtAut:         res.ProtAut,
 		MensajeRes:      res.MsgRes,
+		XMLFirmado:      doc.XMLFirmado,
+		QRURL:           doc.QRURL,
 		FromRetry:       true,
+		IdempotencyKey:  doc.IdempotencyKey,
 	})
+}
+
+// enqueueKude reconstruye KudeData desde el XML firmado canónico y encola la
+// tarea durable (misma cola que la emisión síncrona).
+func (w *Worker) enqueueKude(ctx context.Context, doc *tenant.PendingRetryDoc) error {
+	rde, err := sifen.ParseRDEXML([]byte(doc.XMLFirmado))
+	if err != nil {
+		return fmt.Errorf("parsear xml: %w", err)
+	}
+	branding := kude.Branding{TemplateID: kude.TemplateMinimalista, MostrarFantasia: true}
+	if cfg, err := w.resolver.ORDS().GetKudeConfig(ctx, doc.ClientID); err == nil {
+		branding = kude.Branding{
+			TemplateID:      cfg.TemplateID,
+			ColorPrimario:   cfg.ColorPrimario,
+			LogoURL:         cfg.LogoURL,
+			NotasFooter:     cfg.NotasFooter,
+			MostrarFantasia: cfg.MostrarFantasia,
+		}
+	}
+	qrURL := doc.QRURL
+	if qrURL == "" {
+		return fmt.Errorf("sin qr_url")
+	}
+	data, err := kude.BuildKudeData(rde, qrURL, strings.ToUpper(doc.Environment), branding)
+	if err != nil {
+		return fmt.Errorf("build kude: %w", err)
+	}
+	payload, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("serializar payload: %w", err)
+	}
+	return w.resolver.ORDS().EnqueueKudeTask(ctx, doc.ClientID, doc.CDC, string(payload))
 }

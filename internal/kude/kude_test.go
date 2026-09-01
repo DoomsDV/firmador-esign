@@ -1,7 +1,7 @@
 package kude
 
 import (
-	"bytes"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,25 +47,47 @@ func buildTestRDE(t *testing.T) *sifen.RDE {
 	return rde
 }
 
-func TestRenderKuDE(t *testing.T) {
+func TestBuildAndRenderKuDE(t *testing.T) {
 	rde := buildTestRDE(t)
 	qr := "https://ekuatia.set.gov.py/consultas-test/qr?nVersion=150&Id=" + rde.DE.Id
 
-	pdf, err := RenderKuDE(rde, qr)
-	if err != nil {
-		t.Fatalf("RenderKuDE: %v", err)
-	}
-	if !bytes.HasPrefix(pdf, []byte("%PDF")) {
-		t.Fatalf("salida no es PDF: %q", pdf[:min(8, len(pdf))])
-	}
-	if len(pdf) < 1000 {
-		t.Fatalf("PDF sospechosamente pequeño: %d bytes", len(pdf))
+	for _, tmpl := range []string{TemplateMinimalista, TemplateCorporativa} {
+		data, err := BuildKudeData(rde, qr, "test", Branding{
+			TemplateID:    tmpl,
+			ColorPrimario: "#0f172a",
+			NotasFooter:   "Gracias por su compra",
+		})
+		if err != nil {
+			t.Fatalf("BuildKudeData(%s): %v", tmpl, err)
+		}
+		html, err := RenderKuDEHTML(data)
+		if err != nil {
+			t.Fatalf("RenderKuDEHTML(%s): %v", tmpl, err)
+		}
+		if !strings.Contains(html, "<html") {
+			t.Fatalf("salida de %s no parece HTML: %q", tmpl, html[:min(80, len(html))])
+		}
+		if !strings.Contains(html, data.Emisor.Nombre) {
+			t.Fatalf("HTML de %s no contiene el nombre del emisor", tmpl)
+		}
+		if data.MostrarLeyendaPrueba && !strings.Contains(html, data.LeyendaPrueba) {
+			t.Fatalf("HTML de %s no muestra la leyenda de ambiente de prueba", tmpl)
+		}
+		if !strings.Contains(html, data.LeyendaLegal) {
+			t.Fatalf("HTML de %s no contiene la leyenda legal (XML)", tmpl)
+		}
+		if !strings.Contains(html, data.URLConsulta) {
+			t.Fatalf("HTML de %s no contiene la URL de consulta", tmpl)
+		}
+		if strings.Contains(html, "Código</th>") {
+			t.Fatalf("HTML de %s aún muestra columna Código (debe coincidir con preview)", tmpl)
+		}
 	}
 }
 
-func TestRenderKuDE_RequiereQR(t *testing.T) {
+func TestBuildKudeData_RequiereQR(t *testing.T) {
 	rde := buildTestRDE(t)
-	if _, err := RenderKuDE(rde, ""); err == nil {
+	if _, err := BuildKudeData(rde, "", "test", Branding{}); err == nil {
 		t.Fatal("esperaba error por qrURL vacío")
 	}
 }

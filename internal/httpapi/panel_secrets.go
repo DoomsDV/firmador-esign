@@ -51,23 +51,23 @@ func (s *Server) handlePanelCertificate(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	digital, err := sifen.LoadCertificateFromBytes(p12, req.Password)
+	digital, err := sifen.OpenPKCS12(p12, req.Password)
 	if err != nil {
-		writeErr(w, http.StatusUnprocessableEntity, "INVALID_P12", "no se pudo abrir el p12: "+err.Error())
+		writeErr(w, http.StatusUnprocessableEntity, "INVALID_P12", err.Error())
 		return
 	}
 
 	subject := strings.TrimSpace(req.SubjectDN)
 	if subject == "" {
-		subject = digital.Certificate.Subject.String()
+		subject = digital.Cert.Certificate.Subject.String()
 	}
 	notAfter := strings.TrimSpace(req.NotAfter)
 	if notAfter == "" {
-		notAfter = digital.Certificate.NotAfter.UTC().Format("2006-01-02T15:04:05-07:00")
+		notAfter = digital.Cert.Certificate.NotAfter.UTC().Format("2006-01-02T15:04:05-07:00")
 	}
 
 	key := s.resolver.MasterKey()
-	p12Nonce, p12CT, err := encHex(key, p12)
+	p12Nonce, p12CT, err := encHex(key, digital.StoredBytes)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "ENCRYPT_ERROR", err.Error())
 		return

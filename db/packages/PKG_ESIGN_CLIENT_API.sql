@@ -15,6 +15,10 @@ CREATE OR REPLACE PACKAGE pkg_esign_client_api AS
 
   PROCEDURE pr_upsert_env(p_client_id IN NUMBER, p_role IN VARCHAR2, p_body IN CLOB, p_out OUT CLOB);
 
+  -- Lectura de timbrado/CSC del ambiente para el panel: nunca devuelve el CSC en claro
+  -- (ni cifrado); solo metadata. data=null si el ambiente no esta configurado todavia.
+  PROCEDURE pr_get_env(p_client_id IN NUMBER, p_role IN VARCHAR2, p_environment IN VARCHAR2, p_out OUT CLOB);
+
   -- Correlativo (interno, con bloqueo). Devuelve el proximo numero para el trio
   -- (establecimiento, punto, tipo DE) en el ambiente dado. Numeracion sin huecos.
   PROCEDURE pr_next_document_number(
@@ -230,6 +234,34 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_client_api AS
     p_out := pkg_esign_util.fn_ok;
   END pr_upsert_env;
 
+  PROCEDURE pr_get_env(p_client_id IN NUMBER, p_role IN VARCHAR2, p_environment IN VARCHAR2, p_out OUT CLOB) IS
+    l_env  VARCHAR2(4) := UPPER(p_environment);
+    l_data CLOB;
+  BEGIN
+    assert_owner(p_role);
+    pkg_esign_session.set_client(p_client_id);
+    IF l_env NOT IN ('TEST','PROD') THEN
+      raise_application_error(pkg_esign_http.c_ora_bad_request, 'environment debe ser TEST o PROD');
+    END IF;
+
+    SELECT JSON_OBJECT(
+             'num_timbrado' VALUE se.num_timbrado,
+             'fecha_inicio_vigencia' VALUE TO_CHAR(se.fecha_inicio_vigencia, 'YYYY-MM-DD'),
+             'id_csc' VALUE se.id_csc,
+             'key_version' VALUE se.key_version,
+             'has_csc' VALUE 'true' FORMAT JSON
+             RETURNING CLOB)
+      INTO l_data
+      FROM client_sifen_env se
+     WHERE se.client_id = p_client_id AND se.environment = l_env AND se.is_active = 1;
+
+    p_out := pkg_esign_util.fn_ok(l_data);
+  EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+      -- Ambiente sin configurar todavia: no es un error, el panel lo interpreta como formulario vacio.
+      p_out := pkg_esign_util.fn_ok(NULL);
+  END pr_get_env;
+
   PROCEDURE pr_next_document_number(
     p_client_id       IN  NUMBER,
     p_environment     IN  VARCHAR2,
@@ -302,7 +334,8 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_client_api AS
                                   'id_csc' VALUE se.id_csc, 'key_version' VALUE se.key_version
                                   RETURNING CLOB)
                  FROM client_sifen_env se
-                WHERE se.client_id = c.id_client AND se.environment = p_environment AND se.is_active = 1) FORMAT JSON
+                WHERE se.client_id = c.id_client AND se.environment = p_environment AND se.is_active = 1) FORMAT JSON,
+             'kude_config' VALUE pkg_esign_kude_api.fn_config_json(c.id_client) FORMAT JSON
              RETURNING CLOB)
       INTO l_data
       FROM client c WHERE c.id_client = p_client_id;

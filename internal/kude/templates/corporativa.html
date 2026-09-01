@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>KuDE {{ .CDC }}</title>
+<style>
+  @page { size: A4; margin: 12mm; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    font-size: 10px;
+    color: #1e293b;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .leyenda-prueba {
+    text-align: center;
+    background: #fef3c7;
+    color: #92400e;
+    font-weight: 700;
+    font-size: 9px;
+    letter-spacing: .03em;
+    padding: 4px 0;
+    margin-bottom: 10px;
+    border-radius: 3px;
+  }
+
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 14px;
+    margin-bottom: 10px;
+  }
+  .header .emisor { flex: 1; min-width: 0; }
+  .header .emisor .logo-wrap {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    max-width: 208px;
+    height: 72px;
+    margin-bottom: 6px;
+  }
+  .header .emisor .logo { max-height: 100%; max-width: 100%; width: auto; height: auto; object-fit: contain; object-position: left center; display: block; }
+  .header .emisor h1 { font-size: 14px; margin: 0 0 2px; color: #0f172a; font-weight: 700; }
+  .header .emisor p { margin: 1px 0; font-size: 10px; color: #64748b; }
+  .header .emisor .razon-social { font-style: italic; }
+
+  .doc-box {
+    border-width: 2px;
+    border-style: solid;
+    border-color: {{ .ColorPrimario }};
+    border-radius: 8px;
+    padding: 8px 12px;
+    min-width: 168px;
+    text-align: center;
+    flex-shrink: 0;
+  }
+  .doc-box .tipo { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: {{ .ColorPrimario }}; }
+  .doc-box .numdoc { font-size: 14px; font-weight: 700; color: #0f172a; margin-top: 4px; }
+  .doc-box .meta { margin-top: 6px; font-size: 9px; color: #64748b; text-align: center; }
+
+  .datos-strip {
+    display: flex;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    overflow: hidden;
+    margin-bottom: 10px;
+    font-size: 10px;
+  }
+  .datos-strip .col { flex: 1; padding: 10px; }
+  .datos-strip .col + .col { border-left: 1px solid #cbd5e1; flex: 0 0 38%; }
+  .datos-strip p { margin: 2px 0; color: #64748b; }
+  .datos-strip p b { color: #0f172a; font-weight: 600; }
+
+  table.items { width: 100%; border-collapse: separate; border-spacing: 0; margin-top: 10px; margin-bottom: 8px; }
+  table.items thead th {
+    background: #fff;
+    color: #64748b;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+    font-weight: 700;
+    padding: 6px;
+    text-align: left;
+    border: 1px solid #cbd5e1;
+  }
+  table.items thead th.num { text-align: right; }
+  table.items tbody td { padding: 6px; border: 1px solid #cbd5e1; font-size: 10px; }
+  table.items tbody td.num { text-align: right; white-space: nowrap; }
+  table.items .iva-hint { color: #64748b; }
+
+  .resumen { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+  .resumen-box {
+    min-width: 240px;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    overflow: hidden;
+    font-size: 10px;
+  }
+  .resumen-box .fila {
+    display: flex;
+    justify-content: space-between;
+    gap: 24px;
+    padding: 6px 12px;
+    color: #64748b;
+  }
+  .resumen-box .fila .v { font-weight: 600; color: #0f172a; }
+  .resumen-box .total {
+    display: flex;
+    justify-content: space-between;
+    gap: 24px;
+    padding: 8px 12px;
+    font-size: 14px;
+    font-weight: 800;
+    border-top-width: 2px;
+    border-top-style: solid;
+    border-top-color: {{ .ColorPrimario }};
+  }
+  .resumen-box .total .k { color: #0f172a; }
+  .resumen-box .total .v { color: {{ .ColorPrimario }}; }
+
+  .iva-line {
+    text-align: right;
+    font-size: 9px;
+    color: #64748b;
+    white-space: nowrap;
+    margin-bottom: 8px;
+  }
+
+  .footer {
+    border-top: 1px solid #e2e8f0;
+    padding-top: 14px;
+  }
+  .footer-inner { display: flex; align-items: flex-start; gap: 12px; }
+  .footer .qr img { width: 52px; height: 52px; display: block; }
+  .footer-text { flex: 1; min-width: 0; font-size: 10px; line-height: 1.35; color: #64748b; }
+  .footer-text .cdc { font-family: ui-monospace, monospace; letter-spacing: .03em; margin: 0; }
+  .footer-text .url { margin: 4px 0 0; word-break: break-all; }
+  .footer-text .legal { margin: 6px 0 0; }
+  .footer-text .notas { margin: 6px 0 0; }
+  table.items tbody tr { page-break-inside: avoid; }
+  .footer { page-break-inside: avoid; }
+</style>
+</head>
+<body>
+  {{ if .MostrarLeyendaPrueba }}<div class="leyenda-prueba">{{ .LeyendaPrueba }}</div>{{ end }}
+
+  <div class="header">
+    <div class="emisor">
+      {{ if .LogoURL }}<div class="logo-wrap"><img class="logo" src="{{ .LogoURL }}" alt="Logo del emisor"></div>{{ end }}
+      {{ if and .MostrarFantasia .Emisor.Fantasia }}
+      <h1>{{ .Emisor.Fantasia }}</h1>
+      <p class="razon-social">{{ .Emisor.Nombre }}</p>
+      {{ else }}
+      <h1>{{ .Emisor.Nombre }}</h1>
+      {{ end }}
+      <p>RUC: {{ .Emisor.RUC }}</p>
+      <p>{{ .Emisor.Direccion }}</p>
+    </div>
+    <div class="doc-box">
+      <div class="tipo">{{ .Timbrado.TipoDocDesc }}</div>
+      <div class="numdoc">{{ .Timbrado.Establecimiento }}-{{ .Timbrado.PuntoExp }}-{{ .Timbrado.NumeroDoc }}</div>
+      <div class="meta">
+        <div>Timbrado N° {{ .Timbrado.NumTimbrado }}</div>
+        <div>Vigente desde {{ .Timbrado.FeIniT }}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="datos-strip">
+    <div class="col">
+      <p><b>Fecha y hora de emisión:</b> {{ .FechaEmision }}</p>
+      <p><b>Cliente:</b> {{ .Receptor.Nombre }}</p>
+      {{ if .Receptor.Identificacion }}<p>{{ .Receptor.Identificacion }}</p>{{ end }}
+    </div>
+    <div class="col">
+      {{ if .Condicion }}<p><b>Cond. de venta:</b> {{ .Condicion }}</p>{{ end }}
+      {{ if .Moneda }}<p><b>Moneda:</b> {{ .Moneda }}{{ if .MonedaDesc }} ({{ .MonedaDesc }}){{ end }}</p>{{ end }}
+      {{ if .TipoCambio }}<p><b>Tipo de cambio:</b> {{ .TipoCambio }}</p>{{ end }}
+    </div>
+  </div>
+
+  <table class="items">
+    <thead>
+      <tr>
+        <th>Descripción</th>
+        <th class="num">Cant.</th>
+        <th class="num">P. unit.</th>
+        <th class="num">Total</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{ range .Items }}
+      <tr>
+        <td>{{ .Descripcion }}{{ if .IVAHint }} <span class="iva-hint">({{ .IVAHint }})</span>{{ end }}</td>
+        <td class="num">{{ .Cantidad }}</td>
+        <td class="num">{{ .PrecioUnitario }}</td>
+        <td class="num">{{ .Total }}</td>
+      </tr>
+      {{ end }}
+    </tbody>
+  </table>
+
+  {{ if .Totales }}
+  <div class="resumen">
+    <div class="resumen-box">
+      <div class="fila"><span>Subtotal</span><span class="v">{{ .Totales.TotOpe }}</span></div>
+      <div class="total"><span class="k">Total a pagar {{ .Totales.Moneda }}</span><span class="v">{{ .Totales.TotGralOpe }}</span></div>
+      {{ if .Totales.TotalGs }}<div class="fila"><span>Total Gs.</span><span class="v">{{ .Totales.TotalGs }}</span></div>{{ end }}
+    </div>
+  </div>
+  <p class="iva-line">Liquidación del IVA: (5%) {{ .Totales.TotIVA5 }} | (10%) {{ .Totales.TotIVA10 }} | Total IVA: {{ .Totales.TotIVA }}</p>
+  {{ end }}
+
+  <div class="footer">
+    <div class="footer-inner">
+      <div class="qr"><img src="data:image/png;base64,{{ .QRBase64 }}" alt="QR"></div>
+      <div class="footer-text">
+        <p class="cdc">CDC: {{ .CDC }}</p>
+        <p class="url">{{ .URLConsulta }}</p>
+        <p class="legal">{{ .LeyendaLegal }}</p>
+        {{ if .NotasFooter }}<p class="notas">{{ .NotasFooter }}</p>{{ end }}
+      </div>
+    </div>
+  </div>
+</body>
+</html>

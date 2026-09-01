@@ -93,6 +93,38 @@ func buildDocumentInput(cfg *tenant.Config, req *createDocumentRequest, op *oper
 		return nil, err
 	}
 
+	tipTra := req.TipoTransaccion
+	desTipTra := strings.TrimSpace(req.DesTipoTransaccion)
+	if tipTra == 0 {
+		tipTra = 1
+		desTipTra = "Venta de mercadería"
+	} else if desTipTra == "" {
+		switch tipTra {
+		case 2:
+			desTipTra = "Prestación de servicios"
+		default:
+			desTipTra = "Venta de mercadería"
+		}
+	}
+
+	indPres := req.IndPres
+	desIndPres := strings.TrimSpace(req.DesIndPres)
+	if indPres == 0 {
+		indPres = 1
+		desIndPres = "Operación presencial"
+	} else if desIndPres == "" {
+		switch indPres {
+		case 2:
+			desIndPres = "Operación electrónica"
+		case 3:
+			desIndPres = "Operación telemarketing"
+		case 4:
+			desIndPres = "Venta a domicilio"
+		default:
+			desIndPres = "Operación presencial"
+		}
+	}
+
 	in := sifen.DocumentInput{
 		TipoDE:             tipoDE,
 		Establecimiento:    est.Codigo,
@@ -104,13 +136,13 @@ func buildDocumentInput(cfg *tenant.Config, req *createDocumentRequest, op *oper
 		FechaFirma:         fecha,
 		Emisor:             emisor,
 		Receptor:           rec,
-		TipoTransaccion:    1,
-		DesTipoTransaccion: "Venta de mercadería",
+		TipoTransaccion:    tipTra,
+		DesTipoTransaccion: desTipTra,
 		Moneda:             moneda,
 		DesMoneda:          monedaDesc(moneda),
 		Items:              items,
-		IndPres:            1,
-		DesIndPres:         "Operación presencial",
+		IndPres:            indPres,
+		DesIndPres:         desIndPres,
 	}
 
 	if !isPYG(moneda) {
@@ -226,8 +258,8 @@ func buildItems(reqs []itemRequest) ([]sifen.ItemInput, decimal.Decimal, error) 
 	return items, total, nil
 }
 
-// buildCondicion arma gCamCond. Contado usa un pago en efectivo por el total de la
-// operación; crédito usa plazo (default 30 días).
+// buildCondicion arma gCamCond. Contado usa un pago inicial por el total;
+// medioPago opcional (default efectivo). Códigos sin descripción de catálogo se rechazan.
 func buildCondicion(req *createDocumentRequest, total decimal.Decimal, moneda string) (*sifen.GCamCond, error) {
 	switch strings.ToLower(strings.TrimSpace(req.Condicion)) {
 	case "contado":
@@ -235,7 +267,33 @@ func buildCondicion(req *createDocumentRequest, total decimal.Decimal, moneda st
 			return nil, fmt.Errorf("condición contado por API solo soportada en PYG (usá credito para %s)", moneda)
 		}
 		monto := total.Round(0)
-		return sifen.CondicionContado(sifen.PagoEfectivoPYG(monto))
+		pago := sifen.PagoEfectivoPYG(monto)
+		if req.MedioPago == 3 {
+			pago = sifen.PagoTarjetaCreditoPYG(monto)
+			if d := strings.TrimSpace(req.DesMedioPago); d != "" {
+				pago.DDesTiPag = d
+			}
+		} else if req.MedioPago == 4 {
+			pago = sifen.PagoTarjetaCreditoPYG(monto)
+			pago.ITiPago = 4
+			pago.DDesTiPag = "Tarjeta de débito"
+			if d := strings.TrimSpace(req.DesMedioPago); d != "" {
+				pago.DDesTiPag = d
+			}
+		} else if req.MedioPago > 0 {
+			catalog := sifen.CatalogoDesTiPago(req.MedioPago)
+			if catalog == "" {
+				return nil, fmt.Errorf("medioPago %d no está en el catálogo SIFEN", req.MedioPago)
+			}
+			desc := strings.TrimSpace(req.DesMedioPago)
+			if desc == "" {
+				desc = catalog
+			}
+			pago.ITiPago = req.MedioPago
+			pago.DDesTiPag = desc
+			pago.GPagTarCD = nil
+		}
+		return sifen.CondicionContado(pago)
 	case "credito", "":
 		plazo := strings.TrimSpace(req.Plazo)
 		if plazo == "" {

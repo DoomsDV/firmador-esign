@@ -17,7 +17,9 @@ import (
 
 	"github.com/joho/godotenv"
 
+	"github.com/DoomsDV/firmador-e/internal/gotenberg"
 	"github.com/DoomsDV/firmador-e/internal/httpapi"
+	"github.com/DoomsDV/firmador-e/internal/kudequeue"
 	"github.com/DoomsDV/firmador-e/internal/retry"
 	"github.com/DoomsDV/firmador-e/internal/tenant"
 )
@@ -44,10 +46,15 @@ func main() {
 		log.Printf("⚠️  ESIGN_JWT_SECRET vacio: /v1/panel/* devolvera 503")
 	}
 
+	gotenbergURL := envOr("GOTENBERG_URL", "http://localhost:3000")
+	kudeTimeout := parseTTL(os.Getenv("ESIGN_KUDE_TIMEOUT"), 20*time.Second)
+
 	srv := httpapi.New(resolver, httpapi.ServerOptions{
-		JWTSecret:   jwtSecret,
-		JWTIssuer:   envOr("ESIGN_JWT_ISSUER", "esign-api"),
-		JWTAudience: envOr("ESIGN_JWT_AUDIENCE", "esign-app"),
+		JWTSecret:    jwtSecret,
+		JWTIssuer:    envOr("ESIGN_JWT_ISSUER", "esign-api"),
+		JWTAudience:  envOr("ESIGN_JWT_AUDIENCE", "esign-app"),
+		GotenbergURL: gotenbergURL,
+		KudeTimeout:  kudeTimeout,
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -60,6 +67,15 @@ func main() {
 		Enabled:  envBool("ESIGN_RETRY_ENABLED", true),
 	})
 	go worker.Start(ctx)
+
+	kudeWorker := kudequeue.New(resolver, gotenberg.New(gotenbergURL, kudeTimeout), kudequeue.Config{
+		Interval:     parseTTL(os.Getenv("ESIGN_KUDE_QUEUE_INTERVAL"), 15*time.Second),
+		Batch:        envInt("ESIGN_KUDE_QUEUE_BATCH", 10),
+		LeaseSeconds: envInt("ESIGN_KUDE_QUEUE_LEASE", 120),
+		Timeout:      kudeTimeout,
+		Enabled:      envBool("ESIGN_KUDE_QUEUE_ENABLED", true),
+	})
+	go kudeWorker.Start(ctx)
 
 	addr := envOr("SERVER_ADDR", ":8080")
 	httpServer := &http.Server{
