@@ -153,6 +153,8 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_kude_task_api AS
 
     pkg_esign_session.begin_bootstrap;
 
+    -- Sin ORDER BY/FETCH FIRST: en ADB eso arma una vista y FOR UPDATE SKIP LOCKED
+    -- levanta ORA-02014. ROWNUM acota el lote; el worker reintenta en el siguiente ciclo.
     SELECT id_task BULK COLLECT INTO l_ids
       FROM document_kude_task t
      WHERE t.attempts < t.max_attempts
@@ -162,8 +164,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_kude_task_api AS
           OR (t.status = 'PROCESSING'
               AND (t.lease_until IS NULL OR t.lease_until < SYSTIMESTAMP))
        )
-     ORDER BY t.created_at ASC
-     FETCH FIRST l_limit ROWS ONLY
+       AND ROWNUM <= l_limit
      FOR UPDATE SKIP LOCKED;
 
     IF l_ids.COUNT > 0 THEN
