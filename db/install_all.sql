@@ -28,6 +28,8 @@ PROMPT === Tablas ===
 @@tables/19_client_kude_config.sql
 @@tables/20_document_idempotency.sql
 @@tables/21_document_kude_task.sql
+@@tables/22_client_webhook_endpoint.sql
+@@tables/23_document_webhook_delivery.sql
 
 PROMPT === Paquete de sesion (requerido por el contexto) ===
 @@packages/PKG_ESIGN_SESSION.sql
@@ -44,6 +46,8 @@ PROMPT === Paquetes API ===
 @@packages/PKG_ESIGN_BUCKET.sql
 @@packages/PKG_ESIGN_KUDE_API.sql
 @@packages/PKG_ESIGN_KUDE_TASK_API.sql
+@@packages/PKG_ESIGN_WEBHOOK_API.sql
+@@packages/PKG_ESIGN_WEBHOOK_DELIVERY_API.sql
 @@packages/PKG_ESIGN_JWT.sql
 @@packages/PKG_ESIGN_AUTH_API.sql
 @@packages/PKG_ESIGN_CLIENT_API.sql
@@ -58,10 +62,12 @@ PROMPT === Migraciones incrementales ===
 @@migrations/20260831_document_xml_artifacts_kude_task.sql
 @@migrations/20260901_ords_internal_service_token.sql
 @@migrations/20260901_fiscal_resilience.sql
+@@migrations/20260905_webhook_delivery.sql
 
 PROMPT === Modulos ORDS ===
 @@ords/01_esign_module.sql
 @@ords/02_esign_internal_module.sql
+@@ords/03_esign_webhook_ords.sql
 
 PROMPT === Seeds ===
 @@seeds/01_app_parameter.sql

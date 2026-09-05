@@ -580,6 +580,111 @@ func (c *ORDSClient) CompleteKudeTask(ctx context.Context, taskID int64, success
 	}, nil)
 }
 
+// WebhookSecretResponse mapea pr_get_secret_json.
+type WebhookSecretResponse struct {
+	SecretCiphertext string `json:"secret_ciphertext"`
+	SecretNonce      string `json:"secret_nonce"`
+	KeyVersion       int    `json:"key_version"`
+	URL              string `json:"url"`
+	IsActive         int    `json:"is_active"`
+}
+
+// WebhookDelivery es una entrega reclamada de la cola webhook.
+type WebhookDelivery struct {
+	DeliveryID     int64  `json:"delivery_id"`
+	ClientID       int    `json:"client_id"`
+	DocumentID     int64  `json:"document_id"`
+	CDC            string `json:"cdc"`
+	Environment    string `json:"environment"`
+	EventType      string `json:"event_type"`
+	EventID        string `json:"event_id"`
+	DeliveryUUID   string `json:"delivery_uuid"`
+	TargetURL      string `json:"target_url"`
+	Attempts       int    `json:"attempts"`
+	IdempotencyKey string `json:"idempotency_key"`
+	ProtAut        string `json:"prot_aut"`
+	KudeURL        string `json:"kude_url"`
+	XMLSHA256      string `json:"xml_sha256"`
+	XMLSizeBytes   int    `json:"xml_size_bytes"`
+	XMLMimeType    string `json:"xml_mime_type"`
+}
+
+// WebhookRecoveryDoc documento sin entrega DELIVERED.
+type WebhookRecoveryDoc struct {
+	ClientID int    `json:"client_id"`
+	CDC      string `json:"cdc"`
+}
+
+func (c *ORDSClient) StoreWebhookSecret(ctx context.Context, clientID int, env string, body map[string]any) error {
+	body["client_id"] = clientID
+	body["environment"] = env
+	return c.post(ctx, "webhook/store-secret", body, nil)
+}
+
+func (c *ORDSClient) GetWebhookSecret(ctx context.Context, clientID int, env string) (*WebhookSecretResponse, error) {
+	var out WebhookSecretResponse
+	err := c.post(ctx, "webhook/secret", map[string]any{
+		"client_id":   clientID,
+		"environment": env,
+	}, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *ORDSClient) EnqueueWebhookDelivery(ctx context.Context, clientID int, cdc string) error {
+	return c.post(ctx, "webhook-delivery/enqueue", map[string]any{
+		"client_id": clientID,
+		"cdc":       cdc,
+	}, nil)
+}
+
+func (c *ORDSClient) ClaimWebhookDeliveries(ctx context.Context, leaseOwner string, leaseSeconds, limit int) ([]WebhookDelivery, error) {
+	var out []WebhookDelivery
+	err := c.post(ctx, "webhook-delivery/claim", map[string]any{
+		"lease_owner":   leaseOwner,
+		"lease_seconds": leaseSeconds,
+		"limit":         limit,
+	}, &out)
+	if err != nil {
+		return nil, err
+	}
+	if out == nil {
+		return []WebhookDelivery{}, nil
+	}
+	return out, nil
+}
+
+func (c *ORDSClient) CompleteWebhookDelivery(
+	ctx context.Context,
+	deliveryID int64,
+	success bool,
+	httpStatus int,
+	errMsg string,
+	retryable bool,
+) error {
+	return c.post(ctx, "webhook-delivery/complete", map[string]any{
+		"delivery_id": deliveryID,
+		"success":     success,
+		"http_status": httpStatus,
+		"error":       errMsg,
+		"retryable":   retryable,
+	}, nil)
+}
+
+func (c *ORDSClient) ListWebhookRecovery(ctx context.Context, limit int) ([]WebhookRecoveryDoc, error) {
+	var out []WebhookRecoveryDoc
+	err := c.post(ctx, "webhook-delivery/recovery", map[string]any{"limit": limit}, &out)
+	if err != nil {
+		return nil, err
+	}
+	if out == nil {
+		return []WebhookRecoveryDoc{}, nil
+	}
+	return out, nil
+}
+
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
