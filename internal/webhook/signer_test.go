@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -15,6 +16,36 @@ func TestSignAndVerify(t *testing.T) {
 	}
 	if VerifySignature(secret, body, ts, "t=1,v1=deadbeef", 5*time.Minute) {
 		t.Fatal("expected invalid signature")
+	}
+}
+
+func TestClassifyDelivery(t *testing.T) {
+	ok, retry, msg := classifyDelivery(200, []byte(`{"status":"success"}`))
+	if !ok || retry || msg != "" {
+		t.Fatalf("success envelope: ok=%v retry=%v msg=%q", ok, retry, msg)
+	}
+
+	ok, retry, msg = classifyDelivery(200, []byte(`{"status":"error","message":"ESIGN_API_KEY no configurada para descargar XML."}`))
+	if ok || !retry {
+		t.Fatalf("logical error on 200: ok=%v retry=%v msg=%q", ok, retry, msg)
+	}
+	if !strings.Contains(msg, "ESIGN_API_KEY") {
+		t.Fatalf("expected message in errMsg, got %q", msg)
+	}
+
+	ok, retry, msg = classifyDelivery(503, []byte(`{"status":"error"}`))
+	if ok || !retry || msg != "http 503" {
+		t.Fatalf("503: ok=%v retry=%v msg=%q", ok, retry, msg)
+	}
+
+	ok, retry, msg = classifyDelivery(401, nil)
+	if ok || retry || msg != "http 401" {
+		t.Fatalf("401: ok=%v retry=%v msg=%q", ok, retry, msg)
+	}
+
+	ok, retry, _ = classifyDelivery(409, nil)
+	if ok || !retry {
+		t.Fatalf("409 should be retryable: ok=%v retry=%v", ok, retry)
 	}
 }
 

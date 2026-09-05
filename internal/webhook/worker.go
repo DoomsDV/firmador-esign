@@ -49,7 +49,7 @@ func New(resolver *tenant.Resolver, cfg Config) *Worker {
 	return &Worker{
 		resolver: resolver,
 		cfg:      cfg,
-		client:   &http.Client{Timeout: cfg.Timeout, CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+		client: &http.Client{Timeout: cfg.Timeout, CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
 		}},
 	}
@@ -184,27 +184,40 @@ func (w *Worker) processOne(ctx context.Context, d *tenant.WebhookDelivery) erro
 		return fmt.Errorf("%s", msg)
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 
-	status := resp.StatusCode
-	success := status >= 200 && status < 300
-	retryable := !success && (status == 409 || status == 429 || status >= 500)
-	if !success && status >= 400 && status < 500 && status != 409 {
-		retryable = false
-	}
-
-	var errMsg string
-	if !success {
-		errMsg = fmt.Sprintf("http %d", status)
-	}
-	if err := w.resolver.ORDS().CompleteWebhookDelivery(ctx, d.DeliveryID, success, status, errMsg, retryable); err != nil {
+	success, retryable, errMsg := classifyDelivery(resp.StatusCode, respBody)
+	if err := w.resolver.ORDS().CompleteWebhookDelivery(ctx, d.DeliveryID, success, resp.StatusCode, errMsg, retryable); err != nil {
 		return fmt.Errorf("complete: %w", err)
 	}
 	if success {
-		log.Printf("✅ webhook delivery cdc=%s → %d", d.CDC, status)
+		log.Printf("✅ webhook delivery cdc=%s → %d", d.CDC, resp.StatusCode)
 		return nil
 	}
-	return fmt.Errorf("entrega fallida: http %d (retryable=%v)", status, retryable)
+	return fmt.Errorf("entrega fallida: %s (retryable=%v)", errMsg, retryable)
+}
+
+// classifyDelivery interpreta la respuesta del receptor Hasel.
+// Un 2xx con {"status":"error"} no es éxito: ORDS a veces no propaga :status
+// y el PL/SQL igual abortó (API key, HMAC, CDC). Eso debe reintentarse.
+func classifyDelivery(status int, body []byte) (success bool, retryable bool, errMsg string) {
+	if status < 200 || status >= 300 {
+		retryable = status == 409 || status == 429 || status >= 500
+		return false, retryable, fmt.Sprintf("http %d", status)
+	}
+
+	var env struct {
+		Status  string `json:"status"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &env); err == nil && strings.EqualFold(strings.TrimSpace(env.Status), "error") {
+		msg := strings.TrimSpace(env.Message)
+		if msg == "" {
+			msg = "status error"
+		}
+		return false, true, fmt.Sprintf("http %d logical error: %s", status, msg)
+	}
+	return true, false, ""
 }
 
 func (w *Worker) xmlPublicURL(cdc string) string {
