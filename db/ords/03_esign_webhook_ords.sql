@@ -190,6 +190,34 @@ BEGIN
     htp.p(l_out);
 END;]');
 
+  ORDS.define_template(p_module_name => 'esign_internal', p_pattern => 'webhook-delivery/replay');
+  ORDS.define_handler(
+    p_module_name => 'esign_internal', p_pattern => 'webhook-delivery/replay', p_method => 'POST',
+    p_source_type => ORDS.source_type_plsql,
+    p_source => q'[
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+BEGIN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
+        pkg_esign_http.pr_error(
+            p_status  => pkg_esign_http.c_unauthorized,
+            p_reason  => pkg_esign_http.m_unauthorized,
+            p_code    => pkg_esign_http.e_unauthorized,
+            p_message => pkg_esign_http.msg_service_token
+        );
+        RETURN;
+    END IF;
+
+    pkg_esign_webhook_delivery_api.pr_replay(
+        p_delivery_id => TO_NUMBER(json_value(l_body, '$.delivery_id')),
+        p_out         => l_out
+    );
+    COMMIT;
+    htp.p(l_out);
+END;]');
+
   ORDS.define_template(p_module_name => 'esign_internal', p_pattern => 'webhook-delivery/recovery');
   ORDS.define_handler(
     p_module_name => 'esign_internal', p_pattern => 'webhook-delivery/recovery', p_method => 'POST',

@@ -20,6 +20,13 @@ CREATE OR REPLACE PACKAGE pkg_esign_webhook_delivery_api AS
     p_out         OUT CLOB
   );
 
+  -- Reintento explícito de una entrega terminal o un legado PENDING agotado.
+  -- No se invoca desde el worker.
+  PROCEDURE pr_replay(
+    p_delivery_id IN NUMBER,
+    p_out         OUT CLOB
+  );
+
   -- Documentos APROBADO con KuDE+XML pero sin entrega DELIVERED (reconciliación).
   PROCEDURE pr_list_recovery(p_limit IN NUMBER, p_out OUT CLOB);
 
@@ -119,15 +126,23 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_webhook_delivery_api AS
         RETURN;
       END IF;
 
+      IF l_status = 'FAILED' THEN
+        SELECT JSON_OBJECT(
+                 'delivery_id' VALUE l_delivery_id,
+                 'status' VALUE l_status,
+                 'enqueued' VALUE 'false' FORMAT JSON,
+                 'reason' VALUE 'requires_manual_replay'
+                 RETURNING CLOB)
+          INTO l_data FROM dual;
+        p_out := pkg_esign_util.fn_ok(l_data);
+        RETURN;
+      END IF;
+
       UPDATE /*+ no_parallel */ document_webhook_delivery
-         SET status = 'PENDING',
-             target_url = l_url,
-             lease_owner = NULL,
-             lease_until = NULL,
-             last_error = CASE WHEN l_status = 'FAILED' THEN NULL ELSE last_error END,
-             updated_at = SYSTIMESTAMP,
-             delivered_at = NULL
-       WHERE id_delivery = l_delivery_id;
+         SET target_url = l_url,
+             updated_at = SYSTIMESTAMP
+       WHERE id_delivery = l_delivery_id
+         AND status = 'PENDING';
 
       SELECT JSON_OBJECT(
                'delivery_id' VALUE l_delivery_id,
@@ -190,8 +205,8 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_webhook_delivery_api AS
       FROM document_webhook_delivery t
      WHERE t.attempts < t.max_attempts
        AND (
-             t.status = 'PENDING'
-          OR t.status = 'FAILED'
+             (t.status = 'PENDING'
+              AND (t.lease_until IS NULL OR t.lease_until < SYSTIMESTAMP))
           OR (t.status = 'PROCESSING'
               AND (t.lease_until IS NULL OR t.lease_until < SYSTIMESTAMP))
        )
@@ -205,8 +220,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_webhook_delivery_api AS
                lease_owner = l_owner,
                lease_until = l_until,
                attempts = attempts + 1,
-               updated_at = SYSTIMESTAMP,
-               last_error = NULL
+               updated_at = SYSTIMESTAMP
          WHERE id_delivery = l_ids(i);
 
       l_data := TO_CLOB('[');
@@ -302,13 +316,20 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_webhook_delivery_api AS
                         ELSE 'PENDING'
                       END,
              lease_owner = NULL,
-             lease_until = NULL,
+             -- Para PENDING, lease_until funciona como next_attempt_at. Evita
+             -- ampliar el esquema y bloquea el claim hasta el backoff.
+             lease_until = CASE
+                             WHEN l_retryable IN ('true', '1')
+                                  AND w.attempts < w.max_attempts
+                               THEN SYSTIMESTAMP + NUMTODSINTERVAL(
+                                      LEAST(30 * POWER(2, GREATEST(w.attempts - 1, 0)), 900),
+                                      'SECOND'
+                                    )
+                             ELSE NULL
+                           END,
              last_http_status = l_http_status,
              last_error = l_err,
-             delivered_at = CASE
-                              WHEN l_retryable IN ('false', '0') OR w.attempts >= w.max_attempts
-                              THEN SYSTIMESTAMP
-                            END,
+             delivered_at = NULL,
              updated_at = SYSTIMESTAMP
        WHERE id_delivery = p_delivery_id
       RETURNING status INTO l_status;
@@ -324,6 +345,57 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_webhook_delivery_api AS
       BEGIN pkg_esign_session.end_bootstrap; EXCEPTION WHEN OTHERS THEN NULL; END;
       RAISE;
   END pr_complete;
+
+  PROCEDURE pr_replay(
+    p_delivery_id IN NUMBER,
+    p_out         OUT CLOB
+  ) IS
+    l_status document_webhook_delivery.status%TYPE;
+    l_attempts document_webhook_delivery.attempts%TYPE;
+    l_max_attempts document_webhook_delivery.max_attempts%TYPE;
+    l_data   CLOB;
+  BEGIN
+    pkg_esign_session.begin_bootstrap;
+
+    SELECT status, attempts, max_attempts
+      INTO l_status, l_attempts, l_max_attempts
+      FROM document_webhook_delivery
+     WHERE id_delivery = p_delivery_id
+     FOR UPDATE;
+
+    IF l_status <> 'FAILED'
+       AND NOT (l_status = 'PENDING' AND l_attempts >= l_max_attempts) THEN
+      pkg_esign_session.end_bootstrap;
+      raise_application_error(pkg_esign_http.c_ora_bad_request,
+        'solo se puede replay una entrega FAILED o PENDING agotada');
+    END IF;
+
+    UPDATE /*+ no_parallel */ document_webhook_delivery
+       SET status = 'PENDING',
+           attempts = 0,
+           lease_owner = NULL,
+           lease_until = NULL,
+           delivered_at = NULL,
+           last_error = SUBSTR(
+             'replay manual solicitado; último error: ' || NVL(last_error, 'sin detalle'),
+             1,
+             2000
+           ),
+           updated_at = SYSTIMESTAMP
+     WHERE id_delivery = p_delivery_id;
+
+    pkg_esign_session.end_bootstrap;
+    SELECT JSON_OBJECT('delivery_id' VALUE p_delivery_id, 'status' VALUE 'PENDING' RETURNING CLOB)
+      INTO l_data FROM dual;
+    p_out := pkg_esign_util.fn_ok(l_data);
+  EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+      BEGIN pkg_esign_session.end_bootstrap; EXCEPTION WHEN OTHERS THEN NULL; END;
+      raise_application_error(pkg_esign_http.c_ora_not_found, 'entrega webhook inexistente');
+    WHEN OTHERS THEN
+      BEGIN pkg_esign_session.end_bootstrap; EXCEPTION WHEN OTHERS THEN NULL; END;
+      RAISE;
+  END pr_replay;
 
   PROCEDURE pr_list_recovery(p_limit IN NUMBER, p_out OUT CLOB) IS
     l_limit NUMBER := LEAST(GREATEST(NVL(p_limit, 20), 1), 100);
