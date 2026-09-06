@@ -1,11 +1,11 @@
 {
   "name": "firmador-esign — API SIFEN (Go)",
-  "install": "if [ -d firmador-esign ]; then cd firmador-esign; fi; go mod download && go build ./...",
+  "install": "cd /agent/repos/firmador-esign && go mod download && go build ./...",
   "terminals": [
     {
       "name": "esign-api",
       "description": "API SIFEN multi-tenant (cmd/server) en :8080. Arranca solo si están los secretos ESIGN_ORDS_BASE, ESIGN_SERVICE_TOKEN y ESIGN_MASTER_KEY; si no, imprime cómo configurarlos.",
-      "command": "if [ -d firmador-esign ]; then cd firmador-esign; fi; if [ -n \"$ESIGN_ORDS_BASE\" ] && [ -n \"$ESIGN_SERVICE_TOKEN\" ] && [ -n \"$ESIGN_MASTER_KEY\" ]; then go run ./cmd/server; else echo 'Faltan secretos (ESIGN_ORDS_BASE, ESIGN_SERVICE_TOKEN, ESIGN_MASTER_KEY). Configuralos en el panel de Secrets y reinicia esta terminal para levantar la API SIFEN en :8080. El endpoint publico es GET /v1/health.'; fi"
+      "command": "cd /agent/repos/firmador-esign && if [ -n \"$ESIGN_ORDS_BASE\" ] && [ -n \"$ESIGN_SERVICE_TOKEN\" ] && [ -n \"$ESIGN_MASTER_KEY\" ]; then go run ./cmd/server; else echo 'Faltan secretos (ESIGN_ORDS_BASE, ESIGN_SERVICE_TOKEN, ESIGN_MASTER_KEY). Configuralos en el panel de Secrets y reinicia esta terminal para levantar la API SIFEN en :8080. El endpoint publico es GET /v1/health.'; fi"
     }
   ],
   "ports": [
