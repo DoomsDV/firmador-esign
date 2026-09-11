@@ -63,6 +63,7 @@ PROMPT === Migraciones incrementales ===
 @@migrations/20260901_ords_internal_service_token.sql
 @@migrations/20260901_fiscal_resilience.sql
 @@migrations/20260905_webhook_delivery.sql
+@@migrations/20260911_restore_identity_context.sql
 
 PROMPT === Modulos ORDS ===
 @@ords/01_esign_module.sql
