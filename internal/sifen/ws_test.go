@@ -37,3 +37,20 @@ func TestBuildSiRecepDEEnvelope_CompactSOAP(t *testing.T) {
 		t.Fatal("el body no debe mencionar SOAPAction")
 	}
 }
+
+func TestBuildSiConsDEEnvelope(t *testing.T) {
+	cdc := "01060389648001001000012812026071415704692203"
+	got, err := buildSiConsDEEnvelope(99, cdc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(got)
+	for _, part := range []string{"<rEnviConsDe", "<dId>99</dId>", "<dCDC>" + cdc + "</dCDC>"} {
+		if !strings.Contains(s, part) {
+			t.Fatalf("envelope de consulta incompleto, falta %q: %s", part, s)
+		}
+	}
+	if _, err := buildSiConsDEEnvelope(1, "abc"); err == nil {
+		t.Fatal("esperaba rechazo por CDC inválido")
+	}
+}

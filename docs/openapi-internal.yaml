@@ -146,6 +146,40 @@ paths:
       responses:
         "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
 
+  /internal/v1/documents/reconciliation/context:
+    post:
+      tags: [Interno]
+      summary: Leer el contexto local de un CDC antes de consultar SIFEN
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [client_id, cdc], properties: { client_id: { type: integer }, cdc: { type: string } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+
+  /internal/v1/documents/reconciliation:
+    post:
+      tags: [Interno]
+      summary: Persistir un estado autoritativo obtenido de siConsDE
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [client_id, cdc, environment, remote_estado]
+              properties:
+                client_id: { type: integer }
+                cdc: { type: string }
+                environment: { type: string, enum: [TEST, PROD] }
+                remote_estado: { type: string, enum: [APROBADO, CANCELADO] }
+                cod_res: { type: string }
+                prot_aut: { type: string }
+                mensaje_res: { type: string }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+
   /internal/v1/events:
     post:
       tags: [Interno]
@@ -153,6 +187,18 @@ paths:
       requestBody:
         required: true
         content: { application/json: { schema: { type: object } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+
+  /internal/v1/events/by-idempotency:
+    post:
+      tags: [Interno]
+      summary: Buscar un evento previamente creado por su Idempotency-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [client_id, environment, idempotency_key], properties: { client_id: { type: integer }, environment: { type: string, enum: [TEST, PROD] }, idempotency_key: { type: string } } }
       responses:
         "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
 

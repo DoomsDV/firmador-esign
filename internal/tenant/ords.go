@@ -360,6 +360,43 @@ type PendingRetryDoc struct {
 	IdempotencyKey  string   `json:"idempotency_key"`
 }
 
+// ReconcileContext es el estado local mínimo necesario antes de consultar SIFEN.
+type ReconcileContext struct {
+	CDC              string `json:"cdc"`
+	Environment      string `json:"environment"`
+	Estado           string `json:"estado"`
+	RetryRequested   bool   `json:"retry_requested"`
+	RecoveryRequired bool   `json:"recovery_required"`
+	RecoveryReason   string `json:"recovery_reason"`
+}
+
+func (c *ORDSClient) GetReconcileContext(ctx context.Context, clientID int, cdc string) (*ReconcileContext, error) {
+	var out ReconcileContext
+	if err := c.post(ctx, "documents/reconciliation/context", map[string]any{"client_id": clientID, "cdc": cdc}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ReconcileDocument aplica un estado observado en el WS de consulta. ORDS
+// protege las transiciones terminales antes de persistirlo.
+func (c *ORDSClient) ReconcileDocument(ctx context.Context, clientID int, cdc, environment, remoteState, codRes, protAut, message string) (*ReconcileContext, error) {
+	var out ReconcileContext
+	err := c.post(ctx, "documents/reconciliation", map[string]any{
+		"client_id":     clientID,
+		"cdc":           cdc,
+		"environment":   environment,
+		"remote_estado": remoteState,
+		"cod_res":       codRes,
+		"prot_aut":      protAut,
+		"mensaje_res":   message,
+	}, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // ListPendingRetry pide documentos FIRMADO pendientes. mode: "flagged" | "all".
 func (c *ORDSClient) ListPendingRetry(ctx context.Context, mode string, limit int) ([]PendingRetryDoc, error) {
 	var out []PendingRetryDoc
@@ -402,17 +439,50 @@ func (c *ORDSClient) StoreEnvironment(ctx context.Context, body map[string]any) 
 
 // EventRecord es lo que se persiste tras un evento (cancelación/inutilización).
 type EventRecord struct {
-	ClientID   int    `json:"client_id"`
-	CDC        string `json:"cdc"`
-	TipoEvento string `json:"tipo_evento"` // CANCELACION | INUTILIZACION
-	Estado     string `json:"estado"`
-	CodRes     string `json:"cod_res"`
-	ProtAut    string `json:"prot_aut"`
-	Motivo     string `json:"motivo"`
+	ClientID         int    `json:"client_id"`
+	CDC              string `json:"cdc"`
+	Environment      string `json:"environment"`
+	EventID          string `json:"event_id"`
+	IdempotencyKey   string `json:"idempotency_key,omitempty"`
+	TipoEvento       string `json:"tipo_evento"` // CANCELACION | INUTILIZACION
+	Estado           string `json:"estado"`
+	CodRes           string `json:"cod_res"`
+	ProtAut          string `json:"prot_aut"`
+	Motivo           string `json:"motivo"`
+	XMLFirmado       string `json:"xml_firmado,omitempty"`
+	XMLSHA256        string `json:"xml_sha256,omitempty"`
+	ResponseXML      string `json:"response_xml,omitempty"`
+	RecoveryRequired bool   `json:"recovery_required,omitempty"`
+	RecoveryReason   string `json:"recovery_reason,omitempty"`
 }
 
 func (c *ORDSClient) RegisterEvent(ctx context.Context, rec EventRecord) error {
+	if rec.XMLFirmado != "" && rec.XMLSHA256 == "" {
+		sum := sha256.Sum256([]byte(rec.XMLFirmado))
+		rec.XMLSHA256 = hex.EncodeToString(sum[:])
+	}
 	return c.post(ctx, "events", rec, nil)
+}
+
+type IdempotentEvent struct {
+	Found            bool   `json:"found"`
+	EventID          string `json:"event_id"`
+	Estado           string `json:"estado"`
+	CodRes           string `json:"cod_res"`
+	ProtAut          string `json:"prot_aut"`
+	Motivo           string `json:"motivo"`
+	RecoveryRequired bool   `json:"recovery_required"`
+}
+
+func (c *ORDSClient) FindEventByIdempotencyKey(ctx context.Context, clientID int, environment, key string) (*IdempotentEvent, error) {
+	var out IdempotentEvent
+	err := c.post(ctx, "events/by-idempotency", map[string]any{
+		"client_id": clientID, "environment": environment, "idempotency_key": key,
+	}, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // LogEntry registra una llamada a la API.

@@ -23,6 +23,8 @@ type Config struct {
 	MaxRetry int           // ESIGN_RETRY_MAX intentos por documento (default 10)
 	Batch    int           // docs por ciclo (default 25)
 	Enabled  bool
+	// AllowProdWrites mantiene el worker sin reintentos fiscales en PROD por defecto.
+	AllowProdWrites bool
 }
 
 // Worker consulta ORDS por pendientes y reenvía el XML firmado a SIFEN.
@@ -103,8 +105,11 @@ func (w *Worker) retryOne(ctx context.Context, doc *tenant.PendingRetryDoc) erro
 	if err != nil {
 		return fmt.Errorf("ambiente: %w", err)
 	}
-	if env != sifen.EnvTest {
-		return fmt.Errorf("reenvio a %s bloqueado (solo TEST)", env)
+	if env == sifen.EnvProd && !w.cfg.AllowProdWrites {
+		return fmt.Errorf("reintento PROD bloqueado (ESIGN_SIFEN_PROD_WRITES_ENABLED=false)")
+	}
+	if env != sifen.EnvTest && env != sifen.EnvProd {
+		return fmt.Errorf("ambiente de reenvio no soportado: %s", env)
 	}
 
 	cert, err := w.resolver.GetCertificateByClientID(ctx, doc.ClientID)
@@ -123,6 +128,37 @@ func (w *Worker) retryOne(ctx context.Context, doc *tenant.PendingRetryDoc) erro
 		envioID = time.Now().Unix() % 1_000_000
 	}
 
+	// Nunca reenvíes a ciegas: un timeout puede haber sido aceptado por SIFEN.
+	queryCtx, cancelQuery := context.WithTimeout(ctx, 60*time.Second)
+	_, queryBody, err := client.ConsultarDE(queryCtx, envioID, sifen.EndpointsFor(env).WsConsulta, doc.CDC)
+	cancelQuery()
+	if err != nil {
+		return fmt.Errorf("consultar antes de reenviar: %w", err)
+	}
+	consulta := sifen.ParseConsultaResult(queryBody)
+	if consulta.Found {
+		remoteState := "APROBADO"
+		if consulta.Cancelado {
+			remoteState = "CANCELADO"
+		}
+		if _, err := w.resolver.ORDS().ReconcileDocument(ctx, doc.ClientID, doc.CDC, strings.ToUpper(doc.Environment), remoteState, consulta.CodRes, consulta.ProtAut, consulta.MsgRes); err != nil {
+			return fmt.Errorf("persistir consulta SIFEN: %w", err)
+		}
+		log.Printf("✅ retry cdc=%s ya existe en SIFEN → %s", doc.CDC, remoteState)
+		if remoteState == "APROBADO" {
+			if err := w.enqueueKude(ctx, doc); err != nil {
+				log.Printf("⚠️  retry cdc=%s: encolar KuDE: %v", doc.CDC, err)
+			}
+		}
+		return nil
+	}
+	if consulta.CodRes != "0420" {
+		return fmt.Errorf("consulta SIFEN no autoritativa: %s %s", consulta.CodRes, consulta.MsgRes)
+	}
+	if env != sifen.EnvTest {
+		return fmt.Errorf("reenvío bloqueado fuera de TEST")
+	}
+
 	sendCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	_, body, err := client.RecibirDESync(sendCtx, envioID, []byte(doc.XMLFirmado))
@@ -132,7 +168,10 @@ func (w *Worker) retryOne(ctx context.Context, doc *tenant.PendingRetryDoc) erro
 	}
 
 	res := sifen.ParseResult(body)
-	estado := sifen.EstadoDE(res.CodRes)
+	estado, definitivo := sifen.EstadoDEResult(res.CodRes)
+	if !definitivo {
+		return fmt.Errorf("respuesta de reenvío sin resultado fiscal: %s", res.MsgRes)
+	}
 	if err := w.persist(ctx, doc, res, estado); err != nil {
 		return fmt.Errorf("persistir: %w", err)
 	}
