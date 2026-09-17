@@ -144,6 +144,22 @@ func (c *Client) RecibirEventoSync(ctx context.Context, envioID int64, eventoURL
 	return c.postSOAP(ctx, eventoURL, envelope)
 }
 
+// ConsultarDE consulta el estado autoritativo de un CDC y los eventos que
+// SIFEN tenga registrados sobre él.
+func (c *Client) ConsultarDE(ctx context.Context, envioID int64, consultaURL, cdc string) (statusCode int, respBody []byte, err error) {
+	if c == nil || c.HTTP == nil {
+		return 0, nil, fmt.Errorf("cliente SOAP nulo")
+	}
+	if err := AssertSafeURL(consultaURL, c.env()); err != nil {
+		return 0, nil, err
+	}
+	envelope, err := buildSiConsDEEnvelope(envioID, cdc)
+	if err != nil {
+		return 0, nil, err
+	}
+	return c.postSOAP(ctx, consultaURL, envelope)
+}
+
 // postSOAP hace el POST SOAP 1.2 con mTLS y respeta el contexto.
 func (c *Client) postSOAP(ctx context.Context, url string, envelope []byte) (int, []byte, error) {
 	if err := AssertSafeURL(url, c.env()); err != nil {
@@ -170,7 +186,32 @@ func (c *Client) postSOAP(ctx context.Context, url string, envelope []byte) (int
 	if err != nil {
 		return resp.StatusCode, nil, fmt.Errorf("leer respuesta: %w", err)
 	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return resp.StatusCode, body, fmt.Errorf("SIFEN respondió HTTP %d: %s", resp.StatusCode, truncateSOAP(body, 300))
+	}
 	return resp.StatusCode, body, nil
+}
+
+// buildSiConsDEEnvelope arma el request SOAP 1.2 para siConsDE.
+func buildSiConsDEEnvelope(envioID int64, cdc string) ([]byte, error) {
+	if len(cdc) != 44 {
+		return nil, fmt.Errorf("CDC inválido para consulta: %q", cdc)
+	}
+	for _, r := range cdc {
+		if r < '0' || r > '9' {
+			return nil, fmt.Errorf("CDC inválido para consulta: %q", cdc)
+		}
+	}
+	var buf bytes.Buffer
+	buf.Grow(320)
+	buf.WriteString(`<?xml version="1.0" encoding="UTF-8"?>`)
+	buf.WriteString(`<soap:Envelope xmlns:soap="` + soapNS + `"><soap:Header></soap:Header><soap:Body>`)
+	buf.WriteString(`<rEnviConsDe xmlns="` + SifenNS + `"><dId>`)
+	buf.WriteString(fmt.Sprintf("%d", envioID))
+	buf.WriteString(`</dId><dCDC>`)
+	buf.WriteString(cdc)
+	buf.WriteString(`</dCDC></rEnviConsDe></soap:Body></soap:Envelope>`)
+	return buf.Bytes(), nil
 }
 
 // buildSiRecepDEEnvelope arma el SOAP 1.2 compacto (sin whitespace entre tags).
@@ -263,4 +304,12 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func truncateSOAP(body []byte, max int) string {
+	s := strings.TrimSpace(string(body))
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "..."
 }

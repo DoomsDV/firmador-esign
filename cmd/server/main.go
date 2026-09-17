@@ -51,21 +51,23 @@ func main() {
 	kudeTimeout := parseTTL(os.Getenv("ESIGN_KUDE_TIMEOUT"), 20*time.Second)
 
 	srv := httpapi.New(resolver, httpapi.ServerOptions{
-		JWTSecret:    jwtSecret,
-		JWTIssuer:    envOr("ESIGN_JWT_ISSUER", "esign-api"),
-		JWTAudience:  envOr("ESIGN_JWT_AUDIENCE", "esign-app"),
-		GotenbergURL: gotenbergURL,
-		KudeTimeout:  kudeTimeout,
+		JWTSecret:       jwtSecret,
+		JWTIssuer:       envOr("ESIGN_JWT_ISSUER", "esign-api"),
+		JWTAudience:     envOr("ESIGN_JWT_AUDIENCE", "esign-app"),
+		GotenbergURL:    gotenbergURL,
+		KudeTimeout:     kudeTimeout,
+		AllowProdWrites: envBool("ESIGN_SIFEN_PROD_WRITES_ENABLED", false),
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	worker := retry.New(resolver, retry.Config{
-		Interval: parseTTL(os.Getenv("ESIGN_RETRY_INTERVAL"), 60*time.Second),
-		MaxRetry: envInt("ESIGN_RETRY_MAX", 10),
-		Batch:    envInt("ESIGN_RETRY_BATCH", 25),
-		Enabled:  envBool("ESIGN_RETRY_ENABLED", true),
+		Interval:        parseTTL(os.Getenv("ESIGN_RETRY_INTERVAL"), 60*time.Second),
+		MaxRetry:        envInt("ESIGN_RETRY_MAX", 10),
+		Batch:           envInt("ESIGN_RETRY_BATCH", 25),
+		Enabled:         envBool("ESIGN_RETRY_ENABLED", true),
+		AllowProdWrites: envBool("ESIGN_SIFEN_PROD_WRITES_ENABLED", false),
 	})
 	go worker.Start(ctx)
 

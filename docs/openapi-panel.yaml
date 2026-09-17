@@ -408,8 +408,22 @@ paths:
       parameters:
         - { name: cdc, in: path, required: true, schema: { type: string } }
       responses:
-        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/DocumentDetailEnvelope" } } } }
         "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/panel/documents/{cdc}/reconcile:
+    post:
+      tags: [Panel - Documentos]
+      summary: Conciliar un documento con SIFEN
+      description: Consulta el CDC vía el servicio Go y actualiza ORDS solo con una respuesta autoritativa de SIFEN.
+      servers: [{ url: http://localhost:8080 }]
+      security: [{ bearerJWT: [] }]
+      parameters:
+        - { name: cdc, in: path, required: true, schema: { type: string, minLength: 44, maxLength: 44 } }
+      responses:
+        "200": { description: Consulta completada, content: { application/json: { schema: { $ref: "#/components/schemas/ReconcileResponseEnvelope" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "502": { $ref: "#/components/responses/BadGateway" }
 
   /api/v1/documents/{cdc}/xml:
     get:
@@ -463,6 +477,9 @@ components:
       content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } }
     Unprocessable:
       description: Payload válido pero inconsistente (validación de negocio)
+      content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } }
+    BadGateway:
+      description: No se pudo completar una operación contra ORDS o SIFEN.
       content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } }
 
   schemas:
@@ -543,6 +560,41 @@ components:
         subject_dn: { type: string, description: "Opcional; Go puede derivarlo del P12" }
         not_after: { type: string, format: date-time, description: "Opcional; Go puede derivarlo del P12" }
       required: [p12_base64, password]
+
+    DocumentDetailEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                cdc: { type: string }
+                environment: { type: string, enum: [TEST, PROD] }
+                estado: { type: string, enum: [FIRMADO, APROBADO, RECHAZADO, CANCELADO] }
+                cod_res: { type: string, nullable: true }
+                prot_aut: { type: string, nullable: true }
+                mensaje_res: { type: string, nullable: true }
+                recovery_required: { type: boolean }
+                recovery_reason: { type: string, nullable: true }
+
+    ReconcileResponseEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                cdc: { type: string }
+                estado: { type: string, enum: [FIRMADO, APROBADO, RECHAZADO, CANCELADO] }
+                ambiente: { type: string, enum: [TEST, PROD] }
+                found: { type: boolean }
+                cancelado: { type: boolean }
+                codRes: { type: string }
+                protAut: { type: string }
+                mensaje: { type: string }
+                requiresReconciliation: { type: boolean }
 
     PanelEnvironmentUpsertRequest:
       type: object

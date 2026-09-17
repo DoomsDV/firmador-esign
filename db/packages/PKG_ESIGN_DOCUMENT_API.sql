@@ -5,6 +5,9 @@ CREATE OR REPLACE PACKAGE pkg_esign_document_api AS
 
   PROCEDURE pr_register_document(p_client_id IN NUMBER, p_body IN CLOB, p_out OUT CLOB);
   PROCEDURE pr_register_event(p_client_id IN NUMBER, p_body IN CLOB, p_out OUT CLOB);
+  PROCEDURE pr_find_event_by_idempotency(p_client_id IN NUMBER, p_body IN CLOB, p_out OUT CLOB);
+  PROCEDURE pr_get_reconcile_context(p_client_id IN NUMBER, p_cdc IN VARCHAR2, p_out OUT CLOB);
+  PROCEDURE pr_reconcile_document(p_client_id IN NUMBER, p_body IN CLOB, p_out OUT CLOB);
 
   PROCEDURE pr_list_documents(p_client_id IN NUMBER, p_body IN CLOB, p_out OUT CLOB);
   PROCEDURE pr_get_document(p_client_id IN NUMBER, p_cdc IN VARCHAR2, p_out OUT CLOB);
@@ -71,10 +74,27 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
     USING (SELECT p_client_id AS cid, l_cdc AS cdc FROM dual) s
     ON (d.client_id = s.cid AND d.cdc = s.cdc)
     WHEN MATCHED THEN UPDATE SET
-      estado = json_value(p_body, '$.estado'),
-      cod_res = json_value(p_body, '$.cod_res'),
-      prot_aut = json_value(p_body, '$.prot_aut'),
-      mensaje_res = json_value(p_body, '$.mensaje_res'),
+      estado = CASE
+                 WHEN d.estado = 'CANCELADO' THEN d.estado
+                 WHEN d.estado = 'APROBADO' AND UPPER(json_value(p_body, '$.estado')) IN ('FIRMADO', 'RECHAZADO') THEN d.estado
+                 WHEN d.estado = 'RECHAZADO' AND UPPER(json_value(p_body, '$.estado')) = 'FIRMADO' THEN d.estado
+                 ELSE UPPER(json_value(p_body, '$.estado'))
+               END,
+      cod_res = CASE
+                  WHEN d.estado = 'CANCELADO' THEN d.cod_res
+                  WHEN d.estado = 'APROBADO' AND UPPER(json_value(p_body, '$.estado')) IN ('FIRMADO', 'RECHAZADO') THEN d.cod_res
+                  ELSE json_value(p_body, '$.cod_res')
+                END,
+      prot_aut = CASE
+                   WHEN d.estado = 'CANCELADO' THEN d.prot_aut
+                   WHEN d.estado = 'APROBADO' AND UPPER(json_value(p_body, '$.estado')) IN ('FIRMADO', 'RECHAZADO') THEN d.prot_aut
+                   ELSE json_value(p_body, '$.prot_aut')
+                 END,
+      mensaje_res = CASE
+                      WHEN d.estado = 'CANCELADO' THEN d.mensaje_res
+                      WHEN d.estado = 'APROBADO' AND UPPER(json_value(p_body, '$.estado')) IN ('FIRMADO', 'RECHAZADO') THEN d.mensaje_res
+                      ELSE json_value(p_body, '$.mensaje_res')
+                    END,
       idempotency_key = NVL(d.idempotency_key, NULLIF(TRIM(l_idem), '')),
       retry_requested = CASE
                           WHEN NVL(json_value(p_body, '$.from_retry'), 'false') IN ('true','1')
@@ -501,29 +521,152 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
 
   PROCEDURE pr_register_event(p_client_id IN NUMBER, p_body IN CLOB, p_out OUT CLOB) IS
     l_doc_id document.id_document%TYPE;
+    l_doc_env document.environment%TYPE;
     l_cdc VARCHAR2(44) := json_value(p_body, '$.cdc');
+    l_env VARCHAR2(4) := UPPER(TRIM(json_value(p_body, '$.environment')));
+    l_event_id VARCHAR2(30) := TRIM(json_value(p_body, '$.event_id'));
+    l_estado VARCHAR2(20) := UPPER(TRIM(json_value(p_body, '$.estado')));
+    l_tipo VARCHAR2(20) := UPPER(TRIM(json_value(p_body, '$.tipo_evento')));
+    l_data CLOB;
   BEGIN
     pkg_esign_session.set_client(p_client_id);
 
+    IF l_env NOT IN ('TEST', 'PROD') OR l_event_id IS NULL THEN
+      raise_application_error(pkg_esign_http.c_ora_bad_request,
+        'environment y event_id son obligatorios');
+    END IF;
+    IF l_tipo NOT IN ('CANCELACION', 'INUTILIZACION') THEN
+      raise_application_error(pkg_esign_http.c_ora_bad_request, 'tipo_evento inválido');
+    END IF;
+
     IF l_cdc IS NOT NULL THEN
       BEGIN
-        SELECT id_document INTO l_doc_id FROM document WHERE client_id = p_client_id AND cdc = l_cdc;
-      EXCEPTION WHEN NO_DATA_FOUND THEN l_doc_id := NULL; END;
+        SELECT id_document, environment INTO l_doc_id, l_doc_env
+          FROM document WHERE client_id = p_client_id AND cdc = l_cdc;
+      EXCEPTION WHEN NO_DATA_FOUND THEN
+        raise_application_error(pkg_esign_http.c_ora_not_found, 'documento inexistente');
+      END;
+      IF l_doc_env <> l_env THEN
+        raise_application_error(pkg_esign_http.c_ora_bad_request, 'CDC y ambiente incoherentes');
+      END IF;
     END IF;
 
-    INSERT /*+ no_parallel */ INTO document_event (document_id, client_id, tipo_evento, estado, cod_res, prot_aut, motivo)
-    VALUES (l_doc_id, p_client_id, json_value(p_body, '$.tipo_evento'),
-            json_value(p_body, '$.estado'), json_value(p_body, '$.cod_res'),
-            json_value(p_body, '$.prot_aut'), json_value(p_body, '$.motivo'));
+    MERGE /*+ no_parallel */ INTO document_event e
+    USING (SELECT p_client_id AS client_id, l_event_id AS event_id FROM dual) s
+    ON (e.client_id = s.client_id AND e.event_id = s.event_id)
+    WHEN MATCHED THEN UPDATE SET
+      estado = NVL(l_estado, e.estado),
+      cod_res = NVL(json_value(p_body, '$.cod_res'), e.cod_res),
+      prot_aut = NVL(json_value(p_body, '$.prot_aut'), e.prot_aut),
+      motivo = NVL(json_value(p_body, '$.motivo'), e.motivo),
+      response_xml = NVL(json_value(p_body, '$.response_xml' RETURNING CLOB), e.response_xml),
+      recovery_required = CASE WHEN NVL(json_value(p_body, '$.recovery_required'), 'false') IN ('true','1') THEN 1 ELSE 0 END,
+      recovery_reason = json_value(p_body, '$.recovery_reason'),
+      updated_at = SYSTIMESTAMP
+    WHEN NOT MATCHED THEN INSERT (
+      document_id, client_id, environment, event_id, idempotency_key, tipo_evento,
+      estado, cod_res, prot_aut, motivo, xml_firmado, xml_sha256, response_xml,
+      recovery_required, recovery_reason
+    ) VALUES (
+      l_doc_id, p_client_id, l_env, l_event_id, NULLIF(TRIM(json_value(p_body, '$.idempotency_key')), ''), l_tipo,
+      l_estado, json_value(p_body, '$.cod_res'), json_value(p_body, '$.prot_aut'), json_value(p_body, '$.motivo'),
+      json_value(p_body, '$.xml_firmado' RETURNING CLOB), json_value(p_body, '$.xml_sha256'),
+      json_value(p_body, '$.response_xml' RETURNING CLOB),
+      CASE WHEN NVL(json_value(p_body, '$.recovery_required'), 'false') IN ('true','1') THEN 1 ELSE 0 END,
+      json_value(p_body, '$.recovery_reason')
+    );
 
     -- La cancelacion aceptada marca el documento como CANCELADO.
-    IF json_value(p_body, '$.tipo_evento') = 'CANCELACION'
+    IF l_tipo = 'CANCELACION'
        AND json_value(p_body, '$.cod_res') = '0600' AND l_doc_id IS NOT NULL THEN
-      UPDATE /*+ no_parallel */ document SET estado = 'CANCELADO' WHERE id_document = l_doc_id;
+      UPDATE /*+ no_parallel */ document
+         SET estado = 'CANCELADO', retry_requested = 0, recovery_required = 0,
+             recovery_reason = NULL, recovery_marked_at = NULL
+       WHERE id_document = l_doc_id AND estado IN ('APROBADO', 'CANCELADO');
     END IF;
 
-    p_out := pkg_esign_util.fn_ok;
+    SELECT JSON_OBJECT('event_id' VALUE l_event_id, 'estado' VALUE l_estado RETURNING CLOB)
+      INTO l_data FROM dual;
+    p_out := pkg_esign_util.fn_ok(l_data);
   END pr_register_event;
+
+  PROCEDURE pr_find_event_by_idempotency(p_client_id IN NUMBER, p_body IN CLOB, p_out OUT CLOB) IS
+    l_env VARCHAR2(4) := UPPER(TRIM(json_value(p_body, '$.environment')));
+    l_key VARCHAR2(128) := TRIM(json_value(p_body, '$.idempotency_key'));
+    l_data CLOB;
+  BEGIN
+    pkg_esign_session.set_client(p_client_id);
+    IF l_env NOT IN ('TEST', 'PROD') OR l_key IS NULL THEN
+      SELECT JSON_OBJECT('found' VALUE FALSE RETURNING CLOB) INTO l_data FROM dual;
+    ELSE
+      BEGIN
+        SELECT JSON_OBJECT(
+                 'found' VALUE TRUE, 'event_id' VALUE event_id, 'estado' VALUE estado,
+                 'cod_res' VALUE cod_res, 'prot_aut' VALUE prot_aut, 'motivo' VALUE motivo,
+                 'recovery_required' VALUE CASE WHEN recovery_required = 1 THEN 'true' ELSE 'false' END FORMAT JSON
+                 RETURNING CLOB)
+          INTO l_data FROM document_event
+         WHERE client_id = p_client_id AND environment = l_env AND idempotency_key = l_key
+         FETCH FIRST 1 ROWS ONLY;
+      EXCEPTION WHEN NO_DATA_FOUND THEN
+        SELECT JSON_OBJECT('found' VALUE FALSE RETURNING CLOB) INTO l_data FROM dual;
+      END;
+    END IF;
+    p_out := pkg_esign_util.fn_ok(l_data);
+  END pr_find_event_by_idempotency;
+
+  PROCEDURE pr_get_reconcile_context(p_client_id IN NUMBER, p_cdc IN VARCHAR2, p_out OUT CLOB) IS
+    l_data CLOB;
+  BEGIN
+    pkg_esign_session.set_client(p_client_id);
+    BEGIN
+      SELECT JSON_OBJECT(
+               'cdc' VALUE cdc, 'environment' VALUE environment, 'estado' VALUE estado,
+               'retry_requested' VALUE CASE WHEN retry_requested = 1 THEN 'true' ELSE 'false' END FORMAT JSON,
+               'recovery_required' VALUE CASE WHEN recovery_required = 1 THEN 'true' ELSE 'false' END FORMAT JSON,
+               'recovery_reason' VALUE recovery_reason
+               RETURNING CLOB)
+        INTO l_data FROM document WHERE client_id = p_client_id AND cdc = p_cdc;
+    EXCEPTION WHEN NO_DATA_FOUND THEN
+      raise_application_error(pkg_esign_http.c_ora_not_found, 'documento inexistente');
+    END;
+    p_out := pkg_esign_util.fn_ok(l_data);
+  END pr_get_reconcile_context;
+
+  PROCEDURE pr_reconcile_document(p_client_id IN NUMBER, p_body IN CLOB, p_out OUT CLOB) IS
+    l_cdc VARCHAR2(44) := json_value(p_body, '$.cdc');
+    l_env VARCHAR2(4) := UPPER(TRIM(json_value(p_body, '$.environment')));
+    l_remote_estado VARCHAR2(20) := UPPER(TRIM(json_value(p_body, '$.remote_estado')));
+    l_current document.estado%TYPE;
+    l_data CLOB;
+  BEGIN
+    pkg_esign_session.set_client(p_client_id);
+    IF l_env NOT IN ('TEST', 'PROD') OR l_remote_estado NOT IN ('APROBADO', 'CANCELADO') THEN
+      raise_application_error(pkg_esign_http.c_ora_bad_request, 'ambiente o estado remoto inválido');
+    END IF;
+    SELECT estado INTO l_current FROM document WHERE client_id = p_client_id AND cdc = l_cdc AND environment = l_env FOR UPDATE;
+
+    IF l_current <> 'CANCELADO' THEN
+      UPDATE /*+ no_parallel */ document
+         SET estado = l_remote_estado,
+             prot_aut = NVL(json_value(p_body, '$.prot_aut'), prot_aut),
+             mensaje_res = NVL(json_value(p_body, '$.mensaje_res'), mensaje_res),
+             retry_requested = 0,
+             recovery_required = 0,
+             recovery_reason = NULL,
+             recovery_marked_at = NULL
+       WHERE client_id = p_client_id AND cdc = l_cdc AND environment = l_env;
+    END IF;
+
+    SELECT JSON_OBJECT(
+             'cdc' VALUE cdc, 'estado' VALUE estado,
+             'recovery_required' VALUE CASE WHEN recovery_required = 1 THEN 'true' ELSE 'false' END FORMAT JSON
+             RETURNING CLOB)
+      INTO l_data FROM document WHERE client_id = p_client_id AND cdc = l_cdc;
+    p_out := pkg_esign_util.fn_ok(l_data);
+  EXCEPTION WHEN NO_DATA_FOUND THEN
+    raise_application_error(pkg_esign_http.c_ora_not_found, 'documento inexistente o ambiente incoherente');
+  END pr_reconcile_document;
 
   PROCEDURE pr_list_documents(p_client_id IN NUMBER, p_body IN CLOB, p_out OUT CLOB) IS
     l_env    VARCHAR2(4)  := json_value(p_body, '$.environment');
@@ -549,6 +692,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
                          'cod_res' VALUE cod_res, 'prot_aut' VALUE prot_aut,
                          'receptor_nombre' VALUE receptor_nombre, 'moneda' VALUE moneda,
                          'total_operacion' VALUE total_operacion,
+                         'recovery_required' VALUE CASE WHEN recovery_required = 1 THEN 'true' ELSE 'false' END FORMAT JSON,
                          'fecha_emision' VALUE TO_CHAR(fecha_emision, 'YYYY-MM-DD"T"HH24:MI:SSTZH:TZM')
                          RETURNING CLOB) ORDER BY fecha_emision DESC RETURNING CLOB)
       INTO l_data
@@ -579,6 +723,8 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
                'cod_res' VALUE cod_res, 'prot_aut' VALUE prot_aut, 'mensaje_res' VALUE mensaje_res,
                'receptor_nombre' VALUE receptor_nombre, 'receptor_doc' VALUE receptor_doc,
                'moneda' VALUE moneda, 'total_operacion' VALUE total_operacion,
+               'recovery_required' VALUE CASE WHEN recovery_required = 1 THEN 'true' ELSE 'false' END FORMAT JSON,
+               'recovery_reason' VALUE recovery_reason,
                'fecha_emision' VALUE TO_CHAR(fecha_emision, 'YYYY-MM-DD"T"HH24:MI:SSTZH:TZM')
                RETURNING CLOB)
         INTO l_data FROM document WHERE client_id = p_client_id AND cdc = p_cdc;

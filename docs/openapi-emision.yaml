@@ -21,11 +21,8 @@ info:
 
     Todas las respuestas usan el envelope `{ success, data, error, meta }`.
 
-    **Consulta de estado:** este contrato NO expone un `GET` genérico para reconsultar el
-    estado SIFEN completo de un documento ya emitido (`estado`, `protAut`, etc.). Esos datos
-    llegan en la respuesta síncrona de `POST /v1/documents`; el integrador debe persistir
-    `cdc` + `estado` de esa respuesta. La reconsulta posterior del documento completo solo
-    existe en el plano **panel** (JWT), no disponible por API key.
+    **Consulta de estado:** `POST /v1/documents/{cdc}/reconcile` consulta el CDC en SIFEN
+    y aplica la transición local únicamente cuando recibe un resultado autoritativo.
 
     La única excepción es el **KuDE (PDF)**: su generación es asíncrona (se renderiza y sube
     al bucket después de responder `POST /v1/documents`), por eso sí existe
@@ -126,6 +123,11 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/DocumentResponseEnvelope" }
+        "202":
+          description: Resultado técnico ambiguo; el DE firmado quedó pendiente de conciliación.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DocumentResponseEnvelope" }
         "200":
           description: Documento rechazado por SIFEN (código distinto de 0260)
           content:
@@ -148,6 +150,10 @@ paths:
           required: true
           description: CDC (44 dígitos) del documento aprobado a cancelar
           schema: { type: string, minLength: 44, maxLength: 44 }
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema: { type: string, maxLength: 128 }
       requestBody:
         required: true
         content:
@@ -170,8 +176,34 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/EventResponseEnvelope" }
+        "202":
+          description: Evento firmado con resultado ambiguo; requiere conciliación.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EventResponseEnvelope" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/Unprocessable" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+
+  /v1/documents/{cdc}/reconcile:
+    post:
+      tags: [Emisión]
+      summary: Conciliar un CDC contra SIFEN
+      description: Consulta siConsDE y actualiza ORDS solo con estado autoritativo.
+      security:
+        - bearerApiKey: []
+      parameters:
+        - name: cdc
+          in: path
+          required: true
+          schema: { type: string, minLength: 44, maxLength: 44 }
+      responses:
+        "200":
+          description: Consulta completada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReconcileResponseEnvelope" }
+        "404": { $ref: "#/components/responses/NotFound" }
         "502": { $ref: "#/components/responses/BadGateway" }
 
   /v1/documents/{cdc}/kude:
@@ -240,6 +272,9 @@ components:
       content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } }
     Forbidden:
       description: Sin permiso (key revocada o cliente inactivo)
+      content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } }
+    NotFound:
+      description: Documento inexistente para el cliente autenticado.
       content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } }
     Unprocessable:
       description: Payload válido pero inconsistente (validación de negocio)
@@ -416,8 +451,26 @@ components:
             data:
               type: object
               properties:
-                estado: { type: string, enum: [REGISTRADO, RECHAZADO], example: REGISTRADO }
+                estado: { type: string, enum: [FIRMADO, REGISTRADO, RECHAZADO, PENDIENTE_CONCILIACION], example: REGISTRADO }
                 codRes: { type: string, example: "0600" }
                 protAut: { type: string }
                 mensaje: { type: string }
                 ambiente: { type: string, example: test }
+
+    ReconcileResponseEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                cdc: { type: string }
+                estado: { type: string, enum: [FIRMADO, APROBADO, CANCELADO, RECHAZADO] }
+                ambiente: { type: string, enum: [TEST, PROD] }
+                found: { type: boolean }
+                cancelado: { type: boolean }
+                codRes: { type: string }
+                protAut: { type: string }
+                mensaje: { type: string }
+                requiresReconciliation: { type: boolean }

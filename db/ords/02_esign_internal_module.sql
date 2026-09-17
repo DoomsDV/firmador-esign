@@ -721,6 +721,46 @@ BEGIN
 END;]');
 
   ---------------------------------------------------------------------------
+  -- DOCUMENTS/RECONCILIATION: contexto y transición autoritativa desde SIFEN.
+  ---------------------------------------------------------------------------
+  ords.define_template(p_module_name => 'esign_internal', p_pattern => 'documents/reconciliation/context');
+  ords.define_handler(
+    p_module_name => 'esign_internal', p_pattern => 'documents/reconciliation/context', p_method => 'POST',
+    p_source_type => ords.source_type_plsql,
+    p_source => q'[
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+BEGIN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
+        pkg_esign_http.pr_error(p_status => pkg_esign_http.c_unauthorized, p_reason => pkg_esign_http.m_unauthorized, p_code => pkg_esign_http.e_unauthorized, p_message => pkg_esign_http.msg_service_token);
+        RETURN;
+    END IF;
+    pkg_esign_document_api.pr_get_reconcile_context(TO_NUMBER(json_value(l_body, '$.client_id')), json_value(l_body, '$.cdc'), l_out);
+    htp.p(l_out);
+END;]');
+
+  ords.define_template(p_module_name => 'esign_internal', p_pattern => 'documents/reconciliation');
+  ords.define_handler(
+    p_module_name => 'esign_internal', p_pattern => 'documents/reconciliation', p_method => 'POST',
+    p_source_type => ords.source_type_plsql,
+    p_source => q'[
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+BEGIN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
+        pkg_esign_http.pr_error(p_status => pkg_esign_http.c_unauthorized, p_reason => pkg_esign_http.m_unauthorized, p_code => pkg_esign_http.e_unauthorized, p_message => pkg_esign_http.msg_service_token);
+        RETURN;
+    END IF;
+    pkg_esign_document_api.pr_reconcile_document(TO_NUMBER(json_value(l_body, '$.client_id')), l_body, l_out);
+    COMMIT;
+    htp.p(l_out);
+END;]');
+
+  ---------------------------------------------------------------------------
   -- EVENTS: registrar evento (cancelacion/inutilizacion).
   ---------------------------------------------------------------------------
   ords.define_template(p_module_name => 'esign_internal', p_pattern => 'events');
@@ -749,6 +789,24 @@ BEGIN
         p_out       => l_out
     );
     COMMIT;
+    htp.p(l_out);
+END;]');
+
+  ords.define_template(p_module_name => 'esign_internal', p_pattern => 'events/by-idempotency');
+  ords.define_handler(
+    p_module_name => 'esign_internal', p_pattern => 'events/by-idempotency', p_method => 'POST',
+    p_source_type => ords.source_type_plsql,
+    p_source => q'[
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+BEGIN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
+        pkg_esign_http.pr_error(p_status => pkg_esign_http.c_unauthorized, p_reason => pkg_esign_http.m_unauthorized, p_code => pkg_esign_http.e_unauthorized, p_message => pkg_esign_http.msg_service_token);
+        RETURN;
+    END IF;
+    pkg_esign_document_api.pr_find_event_by_idempotency(TO_NUMBER(json_value(l_body, '$.client_id')), l_body, l_out);
     htp.p(l_out);
 END;]');
 
