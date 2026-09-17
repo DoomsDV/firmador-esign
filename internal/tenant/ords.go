@@ -253,6 +253,7 @@ type DocumentRecord struct {
 	QRURL           string `json:"qr_url"`
 	FromRetry       bool   `json:"from_retry,omitempty"`
 	RetryRequested  bool   `json:"retry_requested,omitempty"`
+	RetryLeaseOwner string `json:"retry_lease_owner,omitempty"`
 	IdempotencyKey  string `json:"idempotency_key,omitempty"`
 }
 
@@ -357,7 +358,50 @@ type PendingRetryDoc struct {
 	TotalOperacion  *float64 `json:"total_operacion"`
 	QRURL           string   `json:"qr_url"`
 	XMLFirmado      string   `json:"xml_firmado"`
+	XMLSHA256       string   `json:"xml_sha256"`
 	IdempotencyKey  string   `json:"idempotency_key"`
+}
+
+// ReconcileContext es el estado local mínimo necesario antes de consultar SIFEN.
+type ReconcileContext struct {
+	CDC              string `json:"cdc"`
+	Environment      string `json:"environment"`
+	Estado           string `json:"estado"`
+	CodRes           string `json:"cod_res"`
+	ProtAut          string `json:"prot_aut"`
+	MensajeRes       string `json:"mensaje_res"`
+	RetryRequested   bool   `json:"retry_requested"`
+	RecoveryRequired bool   `json:"recovery_required"`
+	RecoveryReason   string `json:"recovery_reason"`
+	ReconciledAt     string `json:"reconciled_at"`
+}
+
+func (c *ORDSClient) GetReconcileContext(ctx context.Context, clientID int, cdc string) (*ReconcileContext, error) {
+	var out ReconcileContext
+	if err := c.post(ctx, "documents/reconciliation/context", map[string]any{"client_id": clientID, "cdc": cdc}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ReconcileDocument aplica un estado observado en el WS de consulta. ORDS
+// protege las transiciones terminales antes de persistirlo.
+func (c *ORDSClient) ReconcileDocument(ctx context.Context, clientID int, cdc, environment, remoteState, codRes, protAut, message, retryLeaseOwner string) (*ReconcileContext, error) {
+	var out ReconcileContext
+	err := c.post(ctx, "documents/reconciliation", map[string]any{
+		"client_id":     clientID,
+		"cdc":           cdc,
+		"environment":   environment,
+		"remote_estado": remoteState,
+		"cod_res":       codRes,
+		"prot_aut":      protAut,
+		"mensaje_res":   message,
+		"retry_lease_owner": retryLeaseOwner,
+	}, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // ListPendingRetry pide documentos FIRMADO pendientes. mode: "flagged" | "all".
@@ -374,6 +418,38 @@ func (c *ORDSClient) ListPendingRetry(ctx context.Context, mode string, limit in
 		return []PendingRetryDoc{}, nil
 	}
 	return out, nil
+}
+
+// ClaimPendingRetry reclama atómicamente una tanda de documentos FIRMADO.
+func (c *ORDSClient) ClaimPendingRetry(ctx context.Context, limit int, owner string, leaseSeconds, maxRetry int, allowProd bool) ([]PendingRetryDoc, error) {
+	var out []PendingRetryDoc
+	allowProdValue := 0
+	if allowProd {
+		allowProdValue = 1
+	}
+	err := c.post(ctx, "documents/pending-retry/claim", map[string]any{
+		"limit": limit, "owner": owner, "lease_seconds": leaseSeconds, "max_retry": maxRetry,
+		"allow_prod": allowProdValue,
+	}, &out)
+	if err != nil {
+		return nil, err
+	}
+	if out == nil {
+		return []PendingRetryDoc{}, nil
+	}
+	return out, nil
+}
+
+func (c *ORDSClient) RecordRetryFailure(ctx context.Context, clientID int, cdc, owner, reason string, maxRetry int) error {
+	return c.post(ctx, "documents/pending-retry/failure", map[string]any{
+		"client_id": clientID, "cdc": cdc, "owner": owner, "reason": reason, "max_retry": maxRetry,
+	}, nil)
+}
+
+func (c *ORDSClient) ReleasePendingRetry(ctx context.Context, clientID int, cdc, owner string) error {
+	return c.post(ctx, "documents/pending-retry/release", map[string]any{
+		"client_id": clientID, "cdc": cdc, "owner": owner,
+	}, nil)
 }
 
 // MarkRetryReconciliationRequired detiene la reemisión automática de un DE
@@ -402,17 +478,83 @@ func (c *ORDSClient) StoreEnvironment(ctx context.Context, body map[string]any) 
 
 // EventRecord es lo que se persiste tras un evento (cancelación/inutilización).
 type EventRecord struct {
-	ClientID   int    `json:"client_id"`
-	CDC        string `json:"cdc"`
-	TipoEvento string `json:"tipo_evento"` // CANCELACION | INUTILIZACION
-	Estado     string `json:"estado"`
-	CodRes     string `json:"cod_res"`
-	ProtAut    string `json:"prot_aut"`
-	Motivo     string `json:"motivo"`
+	ClientID         int    `json:"client_id"`
+	CDC              string `json:"cdc"`
+	Environment      string `json:"environment"`
+	EventID          string `json:"event_id"`
+	IdempotencyKey   string `json:"idempotency_key,omitempty"`
+	TipoEvento       string `json:"tipo_evento"` // CANCELACION | INUTILIZACION
+	Estado           string `json:"estado"`
+	CodRes           string `json:"cod_res"`
+	ProtAut          string `json:"prot_aut"`
+	MensajeRes       string `json:"mensaje_res,omitempty"`
+	Motivo           string `json:"motivo"`
+	XMLFirmado       string `json:"xml_firmado,omitempty"`
+	XMLSHA256        string `json:"xml_sha256,omitempty"`
+	RequestSHA256    string `json:"request_sha256,omitempty"`
+	ResponseXML      string `json:"response_xml,omitempty"`
+	RecoveryRequired bool   `json:"recovery_required,omitempty"`
+	RecoveryReason   string `json:"recovery_reason,omitempty"`
+}
+
+type EventIdempotencyClaim struct {
+	ClaimStatus     string `json:"claim_status"`
+	EventID         string `json:"event_id"`
+	Estado          string `json:"estado"`
+	CodRes          string `json:"cod_res"`
+	ProtAut         string `json:"prot_aut"`
+	MensajeRes      string `json:"mensaje_res"`
+	Motivo          string `json:"motivo"`
+	RecoveryRequired bool  `json:"recovery_required"`
+}
+
+func (c *ORDSClient) ClaimEventIdempotency(ctx context.Context, clientID int, environment, cdc, eventID, eventType, key, motivo, requestSHA256 string) (*EventIdempotencyClaim, error) {
+	var out EventIdempotencyClaim
+	err := c.post(ctx, "events/idempotency/claim", map[string]any{
+		"client_id": clientID, "environment": environment, "cdc": cdc,
+		"event_id": eventID, "tipo_evento": eventType, "idempotency_key": key,
+		"motivo": motivo, "request_sha256": requestSHA256,
+	}, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *ORDSClient) ReleaseEventIdempotency(ctx context.Context, clientID int, environment, key string) error {
+	return c.post(ctx, "events/idempotency/release", map[string]any{
+		"client_id": clientID, "environment": environment, "idempotency_key": key,
+	}, nil)
 }
 
 func (c *ORDSClient) RegisterEvent(ctx context.Context, rec EventRecord) error {
+	if rec.XMLFirmado != "" && rec.XMLSHA256 == "" {
+		sum := sha256.Sum256([]byte(rec.XMLFirmado))
+		rec.XMLSHA256 = hex.EncodeToString(sum[:])
+	}
 	return c.post(ctx, "events", rec, nil)
+}
+
+type IdempotentEvent struct {
+	Found            bool   `json:"found"`
+	EventID          string `json:"event_id"`
+	Estado           string `json:"estado"`
+	CodRes           string `json:"cod_res"`
+	ProtAut          string `json:"prot_aut"`
+	MensajeRes       string `json:"mensaje_res"`
+	Motivo           string `json:"motivo"`
+	RecoveryRequired bool   `json:"recovery_required"`
+}
+
+func (c *ORDSClient) FindEventByIdempotencyKey(ctx context.Context, clientID int, environment, key string) (*IdempotentEvent, error) {
+	var out IdempotentEvent
+	err := c.post(ctx, "events/by-idempotency", map[string]any{
+		"client_id": clientID, "environment": environment, "idempotency_key": key,
+	}, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // LogEntry registra una llamada a la API.
@@ -578,6 +720,111 @@ func (c *ORDSClient) CompleteKudeTask(ctx context.Context, taskID int64, success
 		"success": success,
 		"error":   errMsg,
 	}, nil)
+}
+
+// WebhookSecretResponse mapea pr_get_secret_json.
+type WebhookSecretResponse struct {
+	SecretCiphertext string `json:"secret_ciphertext"`
+	SecretNonce      string `json:"secret_nonce"`
+	KeyVersion       int    `json:"key_version"`
+	URL              string `json:"url"`
+	IsActive         int    `json:"is_active"`
+}
+
+// WebhookDelivery es una entrega reclamada de la cola webhook.
+type WebhookDelivery struct {
+	DeliveryID     int64  `json:"delivery_id"`
+	ClientID       int    `json:"client_id"`
+	DocumentID     int64  `json:"document_id"`
+	CDC            string `json:"cdc"`
+	Environment    string `json:"environment"`
+	EventType      string `json:"event_type"`
+	EventID        string `json:"event_id"`
+	DeliveryUUID   string `json:"delivery_uuid"`
+	TargetURL      string `json:"target_url"`
+	Attempts       int    `json:"attempts"`
+	IdempotencyKey string `json:"idempotency_key"`
+	ProtAut        string `json:"prot_aut"`
+	KudeURL        string `json:"kude_url"`
+	XMLSHA256      string `json:"xml_sha256"`
+	XMLSizeBytes   int    `json:"xml_size_bytes"`
+	XMLMimeType    string `json:"xml_mime_type"`
+}
+
+// WebhookRecoveryDoc documento sin entrega DELIVERED.
+type WebhookRecoveryDoc struct {
+	ClientID int    `json:"client_id"`
+	CDC      string `json:"cdc"`
+}
+
+func (c *ORDSClient) StoreWebhookSecret(ctx context.Context, clientID int, env string, body map[string]any) error {
+	body["client_id"] = clientID
+	body["environment"] = env
+	return c.post(ctx, "webhook/store-secret", body, nil)
+}
+
+func (c *ORDSClient) GetWebhookSecret(ctx context.Context, clientID int, env string) (*WebhookSecretResponse, error) {
+	var out WebhookSecretResponse
+	err := c.post(ctx, "webhook/secret", map[string]any{
+		"client_id":   clientID,
+		"environment": env,
+	}, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *ORDSClient) EnqueueWebhookDelivery(ctx context.Context, clientID int, cdc string) error {
+	return c.post(ctx, "webhook-delivery/enqueue", map[string]any{
+		"client_id": clientID,
+		"cdc":       cdc,
+	}, nil)
+}
+
+func (c *ORDSClient) ClaimWebhookDeliveries(ctx context.Context, leaseOwner string, leaseSeconds, limit int) ([]WebhookDelivery, error) {
+	var out []WebhookDelivery
+	err := c.post(ctx, "webhook-delivery/claim", map[string]any{
+		"lease_owner":   leaseOwner,
+		"lease_seconds": leaseSeconds,
+		"limit":         limit,
+	}, &out)
+	if err != nil {
+		return nil, err
+	}
+	if out == nil {
+		return []WebhookDelivery{}, nil
+	}
+	return out, nil
+}
+
+func (c *ORDSClient) CompleteWebhookDelivery(
+	ctx context.Context,
+	deliveryID int64,
+	success bool,
+	httpStatus int,
+	errMsg string,
+	retryable bool,
+) error {
+	return c.post(ctx, "webhook-delivery/complete", map[string]any{
+		"delivery_id": deliveryID,
+		"success":     success,
+		"http_status": httpStatus,
+		"error":       errMsg,
+		"retryable":   retryable,
+	}, nil)
+}
+
+func (c *ORDSClient) ListWebhookRecovery(ctx context.Context, limit int) ([]WebhookRecoveryDoc, error) {
+	var out []WebhookRecoveryDoc
+	err := c.post(ctx, "webhook-delivery/recovery", map[string]any{"limit": limit}, &out)
+	if err != nil {
+		return nil, err
+	}
+	if out == nil {
+		return []WebhookRecoveryDoc{}, nil
+	}
+	return out, nil
 }
 
 func truncate(s string, n int) string {

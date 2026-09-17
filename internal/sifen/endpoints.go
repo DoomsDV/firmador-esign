@@ -2,24 +2,27 @@ package sifen
 
 // Endpoints agrupa las URLs de los WS y del QR de un ambiente SIFEN.
 type Endpoints struct {
-	WsSync   string // recibe.wsdl (siRecepDE síncrono)
-	WsAsync  string // recibe-lote.wsdl (asíncrono por lote)
-	WsEvento string // evento.wsdl (siRecepEvento)
-	QRBase   string // base del dCarQR (consultas / consultas-test)
+	WsSync     string // recibe.wsdl (siRecepDE síncrono)
+	WsAsync    string // recibe-lote.wsdl (asíncrono por lote)
+	WsEvento   string // evento.wsdl (siRecepEvento)
+	WsConsulta string // consulta.wsdl (siConsDE por CDC)
+	QRBase     string // base del dCarQR (consultas / consultas-test)
 }
 
 var endpointsByEnv = map[Environment]Endpoints{
 	EnvTest: {
-		WsSync:   "https://sifen-test.set.gov.py/de/ws/sync/recibe.wsdl",
-		WsAsync:  "https://sifen-test.set.gov.py/de/ws/async/recibe-lote.wsdl",
-		WsEvento: "https://sifen-test.set.gov.py/de/ws/eventos/evento.wsdl",
-		QRBase:   "https://ekuatia.set.gov.py/consultas-test/qr?",
+		WsSync:     "https://sifen-test.set.gov.py/de/ws/sync/recibe.wsdl",
+		WsAsync:    "https://sifen-test.set.gov.py/de/ws/async/recibe-lote.wsdl",
+		WsEvento:   "https://sifen-test.set.gov.py/de/ws/eventos/evento.wsdl",
+		WsConsulta: "https://sifen-test.set.gov.py/de/ws/consultas/consulta.wsdl",
+		QRBase:     "https://ekuatia.set.gov.py/consultas-test/qr?",
 	},
 	EnvProd: {
-		WsSync:   "https://sifen.set.gov.py/de/ws/sync/recibe.wsdl",
-		WsAsync:  "https://sifen.set.gov.py/de/ws/async/recibe-lote.wsdl",
-		WsEvento: "https://sifen.set.gov.py/de/ws/eventos/evento.wsdl",
-		QRBase:   "https://ekuatia.set.gov.py/consultas/qr?",
+		WsSync:     "https://sifen.set.gov.py/de/ws/sync/recibe.wsdl",
+		WsAsync:    "https://sifen.set.gov.py/de/ws/async/recibe-lote.wsdl",
+		WsEvento:   "https://sifen.set.gov.py/de/ws/eventos/evento.wsdl",
+		WsConsulta: "https://sifen.set.gov.py/de/ws/consultas/consulta.wsdl",
+		QRBase:     "https://ekuatia.set.gov.py/consultas/qr?",
 	},
 }
 

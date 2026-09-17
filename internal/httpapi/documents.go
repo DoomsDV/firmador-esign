@@ -30,6 +30,9 @@ const (
 func (s *Server) handleCreateDocument(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	cfg := tenantFromContext(ctx)
+	if !s.writesAllowed(w, cfg) {
+		return
+	}
 
 	var req createDocumentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -214,12 +217,13 @@ func (s *Server) handleCreateDocument(w http.ResponseWriter, r *http.Request) {
 	}
 
 	res := parseSifenResult(body)
-	estado := estadoDE(res.CodRes)
+	estado, definitivo := sifen.EstadoDEResult(res.CodRes)
 	finalRecord := preRecord
 	finalRecord.Estado = estado
 	finalRecord.CodRes = res.CodRes
 	finalRecord.ProtAut = res.ProtAut
 	finalRecord.MensajeRes = res.MsgRes
+	finalRecord.RetryRequested = !definitivo
 	persistErr := s.persistDocument(ctx, finalRecord, true)
 
 	if estado == "APROBADO" && persistErr == nil {
@@ -233,7 +237,9 @@ func (s *Server) handleCreateDocument(w http.ResponseWriter, r *http.Request) {
 		// completamente durable.
 		status = http.StatusAccepted
 	}
-	if estado != "APROBADO" {
+	if !definitivo {
+		status = http.StatusAccepted
+	} else if estado != "APROBADO" {
 		status = http.StatusOK // rechazado por SIFEN: 200 con el detalle en data
 	}
 	_ = code
@@ -429,38 +435,120 @@ func (s *Server) handleCancelDocument(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	cfg := tenantFromContext(ctx)
 	cdc := r.PathValue("cdc")
+	if !s.writesAllowed(w, cfg) {
+		return
+	}
+	if !validCDC(cdc) {
+		writeErr(w, http.StatusUnprocessableEntity, "INVALID_CDC", "CDC inválido")
+		return
+	}
 
 	var req cancelRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "INVALID_JSON", "body inválido: "+err.Error())
 		return
 	}
-
-	ev, err := sifen.NewEventoCancelacion(eventID(), cdc, req.Motivo, s.fechaFirma())
+	motivo := normalizeCancelMotivo(req.Motivo)
+	idemKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idemKey == "" {
+		writeErr(w, http.StatusBadRequest, "IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key es obligatorio para cancelar")
+		return
+	}
+	requestSHA256 := hashCancelRequest(cdc, motivo)
+	eventID := eventIDFor(cfg.EnvUpper(), "CANCELACION", idemKey)
+	ev, err := sifen.NewEventoCancelacion(eventID, cdc, motivo, s.fechaFirma())
 	if err != nil {
 		writeErr(w, http.StatusUnprocessableEntity, "INVALID_EVENT", err.Error())
 		return
 	}
-
-	res, err := s.sendEvento(ctx, cfg, ev)
+	claim, err := s.resolver.ORDS().ClaimEventIdempotency(ctx, cfg.ClientID, cfg.EnvUpper(), cdc, ev.Id, "CANCELACION", idemKey, motivo, requestSHA256)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, "SEND_ERROR", err.Error())
+		var ordsErr *tenant.ORDSError
+		if errors.As(err, &ordsErr) && ordsErr.HTTPStatus == http.StatusConflict {
+			code := "CANCEL_CONFLICT"
+			if strings.Contains(strings.ToLower(ordsErr.Message), "reutilizada") {
+				code = "IDEMPOTENCY_KEY_REUSED"
+			}
+			writeErr(w, http.StatusConflict, code, ordsErr.Message)
+			return
+		}
+		writeErr(w, http.StatusBadGateway, "IDEMPOTENCY_ERROR", err.Error())
 		return
 	}
-	estado := estadoEvento(res.CodRes)
+	switch claim.ClaimStatus {
+	case "COMPLETED":
+		writeOK(w, http.StatusOK, eventResponse{Estado: claim.Estado, CodRes: claim.CodRes, ProtAut: claim.ProtAut, Mensaje: claim.MensajeRes, Ambiente: cfg.EnvUpper()})
+		return
+	case "IN_FLIGHT":
+		writeErr(w, http.StatusConflict, "IDEMPOTENCY_IN_PROGRESS", "ya hay una cancelación en curso con esta Idempotency-Key")
+		return
+	case "ACQUIRED":
+		// El claim queda reservado hasta que el XML firmado se persista.
+	default:
+		writeErr(w, http.StatusBadGateway, "IDEMPOTENCY_ERROR", "respuesta de claim de evento inválida")
+		return
+	}
 
-	_ = s.resolver.ORDS().RegisterEvent(ctx, tenant.EventRecord{
-		ClientID:   cfg.ClientID,
-		CDC:        cdc,
-		TipoEvento: "CANCELACION",
-		Estado:     estado,
-		CodRes:     res.CodRes,
-		ProtAut:    res.ProtAut,
-		Motivo:     req.Motivo,
-	})
+	claimed := true
+	durableEventStarted := false
+	defer func() {
+		if !claimed || durableEventStarted {
+			return
+		}
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := s.resolver.ORDS().ReleaseEventIdempotency(releaseCtx, cfg.ClientID, cfg.EnvUpper(), idemKey); err != nil {
+			log.Printf("[warn] release event idempotency key for client %d: %v", cfg.ClientID, err)
+		}
+	}()
+	client, firmado, err := s.prepareEvento(ctx, cfg, ev)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "SIGN_ERROR", err.Error())
+		return
+	}
+	record := tenant.EventRecord{ClientID: cfg.ClientID, CDC: cdc, Environment: cfg.EnvUpper(), EventID: ev.Id,
+		IdempotencyKey: idemKey, TipoEvento: "CANCELACION", Estado: "FIRMADO", Motivo: motivo,
+		RequestSHA256: requestSHA256, XMLFirmado: string(firmado)}
+	if err := s.resolver.ORDS().RegisterEvent(ctx, record); err != nil {
+		pending := record
+		pending.Estado = "PENDIENTE_CONCILIACION"
+		pending.RecoveryRequired = true
+		pending.RecoveryReason = "persistencia del XML firmado no confirmada; requiere conciliación"
+		if persistErr := s.resolver.ORDS().RegisterEvent(ctx, pending); persistErr == nil {
+			claimed = false
+			durableEventStarted = true
+			writeOK(w, http.StatusAccepted, eventResponse{Estado: pending.Estado, Mensaje: "evento firmado; requiere conciliación", Ambiente: cfg.EnvUpper()})
+			return
+		} else {
+			log.Printf("[critical] persistir cancelación pendiente cdc=%s: %v", cdc, persistErr)
+		}
+		writeErr(w, http.StatusBadGateway, "PERSISTENCE_ERROR", "no se pudo guardar el evento firmado: "+err.Error())
+		return
+	}
+	claimed = false
+	durableEventStarted = true
+
+	res, body, err := s.sendEventoSigned(ctx, client, ev, firmado)
+	if err != nil {
+		record.Estado, record.RecoveryRequired, record.RecoveryReason = "PENDIENTE_CONCILIACION", true, err.Error()
+		if persistErr := s.resolver.ORDS().RegisterEvent(ctx, record); persistErr != nil {
+			log.Printf("[critical] persistir cancelación pendiente cdc=%s: %v", cdc, persistErr)
+		}
+		writeOK(w, http.StatusAccepted, eventResponse{Estado: record.Estado, Mensaje: "evento firmado; requiere conciliación", Ambiente: cfg.EnvUpper()})
+		return
+	}
+	record.CodRes, record.ProtAut, record.MensajeRes, record.ResponseXML = res.CodRes, res.ProtAut, res.MsgRes, string(body)
+	record.Estado = estadoEvento(res.CodRes)
+	if strings.TrimSpace(res.CodRes) == "" {
+		record.Estado, record.RecoveryRequired, record.RecoveryReason = "PENDIENTE_CONCILIACION", true, "respuesta SIFEN sin código"
+	}
+	if err := s.resolver.ORDS().RegisterEvent(ctx, record); err != nil {
+		writeErr(w, http.StatusAccepted, "PERSISTENCE_PENDING", "evento enviado; requiere conciliación local: "+err.Error())
+		return
+	}
 
 	writeOK(w, http.StatusOK, eventResponse{
-		Estado:   estado,
+		Estado:   record.Estado,
 		CodRes:   res.CodRes,
 		ProtAut:  res.ProtAut,
 		Mensaje:  res.MsgRes,
@@ -498,6 +586,9 @@ func (s *Server) handleGetKude(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleInutilizacion(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	cfg := tenantFromContext(ctx)
+	if !s.writesAllowed(w, cfg) {
+		return
+	}
 
 	var req inutilizacionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -535,12 +626,14 @@ func (s *Server) handleInutilizacion(w http.ResponseWriter, r *http.Request) {
 	estado := estadoEvento(res.CodRes)
 
 	_ = s.resolver.ORDS().RegisterEvent(ctx, tenant.EventRecord{
-		ClientID:   cfg.ClientID,
-		TipoEvento: "INUTILIZACION",
-		Estado:     estado,
-		CodRes:     res.CodRes,
-		ProtAut:    res.ProtAut,
-		Motivo:     req.Motivo,
+		ClientID:    cfg.ClientID,
+		Environment: cfg.EnvUpper(),
+		EventID:     ev.Id,
+		TipoEvento:  "INUTILIZACION",
+		Estado:      estado,
+		CodRes:      res.CodRes,
+		ProtAut:     res.ProtAut,
+		Motivo:      req.Motivo,
 	})
 
 	writeOK(w, http.StatusOK, eventResponse{
@@ -554,37 +647,78 @@ func (s *Server) handleInutilizacion(w http.ResponseWriter, r *http.Request) {
 
 // sendEvento firma y envía un evento al WS de eventos del ambiente.
 func (s *Server) sendEvento(ctx context.Context, cfg *tenant.Config, ev *sifen.REve) (sifenResult, error) {
-	cert, err := s.resolver.GetCertificate(ctx, cfg)
+	client, firmado, err := s.prepareEvento(ctx, cfg, ev)
 	if err != nil {
 		return sifenResult{}, err
+	}
+	result, _, err := s.sendEventoSigned(ctx, client, ev, firmado)
+	return result, err
+}
+
+func (s *Server) prepareEvento(ctx context.Context, cfg *tenant.Config, ev *sifen.REve) (*sifen.Client, []byte, error) {
+	cert, err := s.resolver.GetCertificate(ctx, cfg)
+	if err != nil {
+		return nil, nil, err
 	}
 	digital, err := sifen.LoadCertificateFromBytes(cert.P12, cert.Password)
 	if err != nil {
-		return sifenResult{}, err
+		return nil, nil, err
 	}
 	firmado, err := sifen.FirmarEvento(ev, digital)
 	if err != nil {
-		return sifenResult{}, err
+		return nil, nil, err
 	}
-
-	eventoURL := sifen.EndpointsFor(cfg.Environment).WsEvento
 	client, err := sifen.NewClientFromP12Bytes(cfg.Environment, cert.P12, cert.Password, sifen.EndpointsFor(cfg.Environment).WsSync)
 	if err != nil {
-		return sifenResult{}, err
+		return nil, nil, err
 	}
+	return client, firmado, nil
+}
+
+func (s *Server) sendEventoSigned(ctx context.Context, client *sifen.Client, ev *sifen.REve, firmado []byte) (sifenResult, []byte, error) {
 	sendCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	id, _ := strconv.Atoi(ev.Id)
-	_, body, err := client.RecibirEventoSync(sendCtx, int64(id), eventoURL, firmado)
+	_, body, err := client.RecibirEventoSync(sendCtx, int64(id), sifen.EndpointsFor(client.Env).WsEvento, firmado)
 	if err != nil {
-		return sifenResult{}, err
+		return sifenResult{}, nil, err
 	}
-	return parseSifenResult(body), nil
+	return parseSifenResult(body), body, nil
 }
 
 // eventID genera un id de evento único por segundo (suficiente para el dId).
 func eventID() int {
 	return int(time.Now().Unix() % 1000000000)
+}
+
+func hashCancelRequest(cdc, motivo string) string {
+	sum := sha256.Sum256([]byte("CANCELACION\n" + strings.TrimSpace(cdc) + "\n" + normalizeCancelMotivo(motivo)))
+	return hex.EncodeToString(sum[:])
+}
+
+func normalizeCancelMotivo(motivo string) string {
+	return strings.Join(strings.Fields(motivo), " ")
+}
+
+func eventIDFor(environment, eventType, key string) int {
+	if key == "" {
+		return eventID()
+	}
+	sum := sha256.Sum256([]byte(strings.ToUpper(environment) + "\n" + strings.ToUpper(eventType) + "\n" + key))
+	n := int(sum[0])<<24 | int(sum[1])<<16 | int(sum[2])<<8 | int(sum[3])
+	return n%999999999 + 1
+}
+
+func validCDC(cdc string) bool {
+	if len(cdc) != 44 {
+		return false
+	}
+	for _, r := range cdc {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // enqueueKudeDurable arma KudeData en la goroutine de la request (rde no es

@@ -22,6 +22,7 @@ import (
 	"github.com/DoomsDV/firmador-e/internal/kudequeue"
 	"github.com/DoomsDV/firmador-e/internal/retry"
 	"github.com/DoomsDV/firmador-e/internal/tenant"
+	"github.com/DoomsDV/firmador-e/internal/webhook"
 )
 
 func main() {
@@ -50,21 +51,24 @@ func main() {
 	kudeTimeout := parseTTL(os.Getenv("ESIGN_KUDE_TIMEOUT"), 20*time.Second)
 
 	srv := httpapi.New(resolver, httpapi.ServerOptions{
-		JWTSecret:    jwtSecret,
-		JWTIssuer:    envOr("ESIGN_JWT_ISSUER", "esign-api"),
-		JWTAudience:  envOr("ESIGN_JWT_AUDIENCE", "esign-app"),
-		GotenbergURL: gotenbergURL,
-		KudeTimeout:  kudeTimeout,
+		JWTSecret:       jwtSecret,
+		JWTIssuer:       envOr("ESIGN_JWT_ISSUER", "esign-api"),
+		JWTAudience:     envOr("ESIGN_JWT_AUDIENCE", "esign-app"),
+		GotenbergURL:    gotenbergURL,
+		KudeTimeout:     kudeTimeout,
+		AllowProdWrites: envBool("ESIGN_SIFEN_PROD_WRITES_ENABLED", false),
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	worker := retry.New(resolver, retry.Config{
-		Interval: parseTTL(os.Getenv("ESIGN_RETRY_INTERVAL"), 60*time.Second),
-		MaxRetry: envInt("ESIGN_RETRY_MAX", 10),
-		Batch:    envInt("ESIGN_RETRY_BATCH", 25),
-		Enabled:  envBool("ESIGN_RETRY_ENABLED", true),
+		Interval:        parseTTL(os.Getenv("ESIGN_RETRY_INTERVAL"), 60*time.Second),
+		MaxRetry:        envInt("ESIGN_RETRY_MAX", 10),
+		Batch:           envInt("ESIGN_RETRY_BATCH", 25),
+		Enabled:         envBool("ESIGN_RETRY_ENABLED", true),
+		AllowProdWrites: envBool("ESIGN_SIFEN_PROD_WRITES_ENABLED", false),
+		LeaseSeconds:    envInt("ESIGN_RETRY_LEASE_SECONDS", 360),
 	})
 	go worker.Start(ctx)
 
@@ -76,6 +80,16 @@ func main() {
 		Enabled:      envBool("ESIGN_KUDE_QUEUE_ENABLED", true),
 	})
 	go kudeWorker.Start(ctx)
+
+	webhookWorker := webhook.New(resolver, webhook.Config{
+		Interval:     parseTTL(os.Getenv("ESIGN_WEBHOOK_QUEUE_INTERVAL"), 15*time.Second),
+		Batch:        envInt("ESIGN_WEBHOOK_QUEUE_BATCH", 10),
+		LeaseSeconds: envInt("ESIGN_WEBHOOK_QUEUE_LEASE", 120),
+		Timeout:      parseTTL(os.Getenv("ESIGN_WEBHOOK_TIMEOUT"), 30*time.Second),
+		Enabled:      envBool("ESIGN_WEBHOOK_QUEUE_ENABLED", true),
+		PublicAPIURL: envOr("ESIGN_PUBLIC_API_BASE_URL", ""),
+	})
+	go webhookWorker.Start(ctx)
 
 	addr := envOr("SERVER_ADDR", ":8080")
 	httpServer := &http.Server{

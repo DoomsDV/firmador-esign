@@ -15,6 +15,7 @@ import (
 	"github.com/DoomsDV/firmador-e/internal/kude"
 	"github.com/DoomsDV/firmador-e/internal/sifen"
 	"github.com/DoomsDV/firmador-e/internal/tenant"
+	"github.com/DoomsDV/firmador-e/internal/webhook"
 )
 
 // Config del worker de cola KuDE.
@@ -188,5 +189,9 @@ func (w *Worker) processOne(ctx context.Context, task *tenant.KudeTask) error {
 		return fmt.Errorf("complete READY: %w", err)
 	}
 	log.Printf("✅ kude queue cdc=%s → READY", task.CDC)
+
+	enqueueCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	webhook.EnqueueAfterKude(enqueueCtx, w.resolver.ORDS(), task.ClientID, task.CDC)
 	return nil
 }

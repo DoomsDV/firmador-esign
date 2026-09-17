@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/DoomsDV/firmador-e/internal/gotenberg"
+	"github.com/DoomsDV/firmador-e/internal/sifen"
 	"github.com/DoomsDV/firmador-e/internal/tenant"
 )
 
@@ -20,6 +21,9 @@ type ServerOptions struct {
 	GotenbergURL string
 	// KudeTimeout acota el render+subida asíncrona del KuDE. <=0 usa el default.
 	KudeTimeout time.Duration
+	// AllowProdWrites debe permanecer false en staging. Habilita escrituras
+	// fiscales (emisión, cancelación e inutilización) contra SIFEN PROD.
+	AllowProdWrites bool
 }
 
 // Server expone el motor de emisión SIFEN como API HTTP multi-tenant.
@@ -30,8 +34,9 @@ type Server struct {
 	jwtIssuer   string
 	jwtAudience string
 
-	gotenberg   *gotenberg.Client
-	kudeTimeout time.Duration
+	gotenberg       *gotenberg.Client
+	kudeTimeout     time.Duration
+	allowProdWrites bool
 }
 
 // New crea el servidor con el resolver de tenants ya configurado.
@@ -53,13 +58,14 @@ func New(resolver *tenant.Resolver, opts ServerOptions) *Server {
 		kudeTimeout = gotenberg.DefaultTimeout
 	}
 	return &Server{
-		resolver:    resolver,
-		tz:          tz,
-		jwtSecret:   opts.JWTSecret,
-		jwtIssuer:   issuer,
-		jwtAudience: aud,
-		gotenberg:   gotenberg.New(opts.GotenbergURL, kudeTimeout),
-		kudeTimeout: kudeTimeout,
+		resolver:        resolver,
+		tz:              tz,
+		jwtSecret:       opts.JWTSecret,
+		jwtIssuer:       issuer,
+		jwtAudience:     aud,
+		gotenberg:       gotenberg.New(opts.GotenbergURL, kudeTimeout),
+		kudeTimeout:     kudeTimeout,
+		allowProdWrites: opts.AllowProdWrites,
 	}
 }
 
@@ -70,11 +76,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/health", s.withLogging(s.handleHealth))
 	mux.HandleFunc("POST /v1/documents", s.withLogging(s.authMiddleware(s.handleCreateDocument)))
 	mux.HandleFunc("POST /v1/documents/{cdc}/cancel", s.withLogging(s.authMiddleware(s.handleCancelDocument)))
+	mux.HandleFunc("POST /v1/documents/{cdc}/reconcile", s.withLogging(s.authMiddleware(s.handleReconcileDocument)))
 	mux.HandleFunc("GET /v1/documents/{cdc}/kude", s.withLogging(s.authMiddleware(s.handleGetKude)))
 	mux.HandleFunc("GET /v1/documents/{cdc}/xml", s.withLogging(s.authMiddleware(s.handleGetDocumentXML)))
 	mux.HandleFunc("POST /v1/events/inutilizacion", s.withLogging(s.authMiddleware(s.handleInutilizacion)))
 	mux.HandleFunc("POST /v1/panel/certificate", s.withLogging(s.panelJWTMiddleware(true, s.handlePanelCertificate)))
 	mux.HandleFunc("PUT /v1/panel/environments", s.withLogging(s.panelJWTMiddleware(true, s.handlePanelEnvironments)))
+	mux.HandleFunc("POST /v1/panel/webhooks/rotate", s.withLogging(s.panelJWTMiddleware(true, s.handlePanelWebhookRotate)))
+	mux.HandleFunc("POST /v1/panel/documents/{cdc}/reconcile", s.withLogging(s.panelJWTMiddleware(false, s.handlePanelReconcileDocument)))
 	return corsMiddleware(parseCORSOrigins(os.Getenv("ESIGN_CORS_ORIGINS")))(mux)
 }
 
@@ -83,6 +92,17 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"status": "ok",
 		"time":   time.Now().UTC().Format(time.RFC3339),
 	})
+}
+
+// writesAllowed evita operaciones fiscales reales en staging aunque una key
+// accidentalmente resuelva al ambiente PROD.
+func (s *Server) writesAllowed(w http.ResponseWriter, cfg *tenant.Config) bool {
+	if cfg.Environment == sifen.EnvProd && !s.allowProdWrites {
+		writeErr(w, http.StatusForbidden, "PROD_WRITES_DISABLED",
+			"las escrituras hacia SIFEN PROD están deshabilitadas en este despliegue")
+		return false
+	}
+	return true
 }
 
 // fechaFirma devuelve la hora de Asunción con margen atrás (evita error 1004:
