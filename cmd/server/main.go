@@ -68,6 +68,7 @@ func main() {
 		Batch:           envInt("ESIGN_RETRY_BATCH", 25),
 		Enabled:         envBool("ESIGN_RETRY_ENABLED", true),
 		AllowProdWrites: envBool("ESIGN_SIFEN_PROD_WRITES_ENABLED", false),
+		LeaseSeconds:    envInt("ESIGN_RETRY_LEASE_SECONDS", 360),
 	})
 	go worker.Start(ctx)
 

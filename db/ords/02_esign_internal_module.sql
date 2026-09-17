@@ -400,6 +400,85 @@ BEGIN
 END;]');
 
   ---------------------------------------------------------------------------
+  -- DOCUMENTS/PENDING-RETRY/CLAIM: reclamo con lease para el worker Go.
+  ---------------------------------------------------------------------------
+  ords.define_template(p_module_name => 'esign_internal', p_pattern => 'documents/pending-retry/claim');
+  ords.define_handler(
+    p_module_name => 'esign_internal', p_pattern => 'documents/pending-retry/claim', p_method => 'POST',
+    p_source_type => ords.source_type_plsql,
+    p_source => q'[
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+BEGIN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
+        pkg_esign_http.pr_error(p_status => pkg_esign_http.c_unauthorized, p_reason => pkg_esign_http.m_unauthorized, p_code => pkg_esign_http.e_unauthorized, p_message => pkg_esign_http.msg_service_token);
+        RETURN;
+    END IF;
+    pkg_esign_document_api.pr_claim_pending_retry(
+        p_limit => NVL(TO_NUMBER(json_value(l_body, '$.limit')), 25),
+        p_owner => json_value(l_body, '$.owner'),
+        p_lease_seconds => NVL(TO_NUMBER(json_value(l_body, '$.lease_seconds')), 360),
+        p_max_retry => NVL(TO_NUMBER(json_value(l_body, '$.max_retry')), 10),
+        p_allow_prod => NVL(TO_NUMBER(json_value(l_body, '$.allow_prod')), 0),
+        p_out => l_out
+    );
+    COMMIT;
+    htp.p(l_out);
+END;]');
+
+  ords.define_template(p_module_name => 'esign_internal', p_pattern => 'documents/pending-retry/failure');
+  ords.define_handler(
+    p_module_name => 'esign_internal', p_pattern => 'documents/pending-retry/failure', p_method => 'POST',
+    p_source_type => ords.source_type_plsql,
+    p_source => q'[
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+BEGIN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
+        pkg_esign_http.pr_error(p_status => pkg_esign_http.c_unauthorized, p_reason => pkg_esign_http.m_unauthorized, p_code => pkg_esign_http.e_unauthorized, p_message => pkg_esign_http.msg_service_token);
+        RETURN;
+    END IF;
+    pkg_esign_document_api.pr_record_retry_failure(
+        p_client_id => TO_NUMBER(json_value(l_body, '$.client_id')),
+        p_cdc => json_value(l_body, '$.cdc'),
+        p_owner => json_value(l_body, '$.owner'),
+        p_reason => json_value(l_body, '$.reason'),
+        p_max_retry => NVL(TO_NUMBER(json_value(l_body, '$.max_retry')), 10),
+        p_out => l_out
+    );
+    COMMIT;
+    htp.p(l_out);
+END;]');
+
+  ords.define_template(p_module_name => 'esign_internal', p_pattern => 'documents/pending-retry/release');
+  ords.define_handler(
+    p_module_name => 'esign_internal', p_pattern => 'documents/pending-retry/release', p_method => 'POST',
+    p_source_type => ords.source_type_plsql,
+    p_source => q'[
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+BEGIN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
+        pkg_esign_http.pr_error(p_status => pkg_esign_http.c_unauthorized, p_reason => pkg_esign_http.m_unauthorized, p_code => pkg_esign_http.e_unauthorized, p_message => pkg_esign_http.msg_service_token);
+        RETURN;
+    END IF;
+    pkg_esign_document_api.pr_release_pending_retry(
+        p_client_id => TO_NUMBER(json_value(l_body, '$.client_id')),
+        p_cdc => json_value(l_body, '$.cdc'),
+        p_owner => json_value(l_body, '$.owner'),
+        p_out => l_out
+    );
+    COMMIT;
+    htp.p(l_out);
+END;]');
+
+  ---------------------------------------------------------------------------
   -- DOCUMENTS/RETRY/RECONCILIATION: detiene un reintento automático agotado.
   ---------------------------------------------------------------------------
   ords.define_template(
@@ -807,6 +886,87 @@ BEGIN
         RETURN;
     END IF;
     pkg_esign_document_api.pr_find_event_by_idempotency(TO_NUMBER(json_value(l_body, '$.client_id')), l_body, l_out);
+    htp.p(l_out);
+END;]');
+
+  ---------------------------------------------------------------------------
+  -- EVENTS/IDEMPOTENCY/CLAIM: reserva atomica antes de firmar el evento.
+  ---------------------------------------------------------------------------
+  ords.define_template(p_module_name => 'esign_internal', p_pattern => 'events/idempotency/claim');
+  ords.define_handler(
+    p_module_name => 'esign_internal', p_pattern => 'events/idempotency/claim', p_method => 'POST',
+    p_source_type => ords.source_type_plsql,
+    p_source => q'[
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+BEGIN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
+        pkg_esign_http.pr_error(p_status => pkg_esign_http.c_unauthorized, p_reason => pkg_esign_http.m_unauthorized, p_code => pkg_esign_http.e_unauthorized, p_message => pkg_esign_http.msg_service_token);
+        RETURN;
+    END IF;
+    BEGIN
+        pkg_esign_document_api.pr_claim_event_idempotency(
+            p_client_id => TO_NUMBER(json_value(l_body, '$.client_id')),
+            p_body => l_body,
+            p_out => l_out
+        );
+        COMMIT;
+        htp.p(l_out);
+    EXCEPTION
+        WHEN OTHERS THEN
+            ROLLBACK;
+            IF SQLCODE = pkg_esign_http.c_ora_bad_request THEN
+                :status_code := pkg_esign_http.c_bad_request;
+                pkg_esign_http.pr_error(
+                    p_status  => pkg_esign_http.c_bad_request,
+                    p_reason  => pkg_esign_http.m_bad_request,
+                    p_code    => pkg_esign_http.e_bad_request,
+                    p_message => SQLERRM
+                );
+            ELSIF SQLCODE = pkg_esign_http.c_ora_not_found THEN
+                :status_code := pkg_esign_http.c_not_found;
+                pkg_esign_http.pr_error(
+                    p_status  => pkg_esign_http.c_not_found,
+                    p_reason  => pkg_esign_http.m_not_found,
+                    p_code    => pkg_esign_http.e_not_found,
+                    p_message => SQLERRM
+                );
+            ELSIF SQLCODE = pkg_esign_http.c_ora_conflict THEN
+                :status_code := pkg_esign_http.c_conflict;
+                pkg_esign_http.pr_error(
+                    p_status  => pkg_esign_http.c_conflict,
+                    p_reason  => pkg_esign_http.m_conflict,
+                    p_code    => pkg_esign_http.e_conflict,
+                    p_message => SQLERRM
+                );
+            ELSE
+                RAISE;
+            END IF;
+    END;
+END;]');
+
+  ords.define_template(p_module_name => 'esign_internal', p_pattern => 'events/idempotency/release');
+  ords.define_handler(
+    p_module_name => 'esign_internal', p_pattern => 'events/idempotency/release', p_method => 'POST',
+    p_source_type => ords.source_type_plsql,
+    p_source => q'[
+DECLARE
+    l_body CLOB := :body_text;
+    l_out  CLOB;
+BEGIN
+    IF NOT pkg_esign_util.fn_service_token_ok(:service_token) THEN
+        :status_code := pkg_esign_http.c_unauthorized;
+        pkg_esign_http.pr_error(p_status => pkg_esign_http.c_unauthorized, p_reason => pkg_esign_http.m_unauthorized, p_code => pkg_esign_http.e_unauthorized, p_message => pkg_esign_http.msg_service_token);
+        RETURN;
+    END IF;
+    pkg_esign_document_api.pr_release_event_idempotency(
+        p_client_id => TO_NUMBER(json_value(l_body, '$.client_id')),
+        p_body => l_body,
+        p_out => l_out
+    );
+    COMMIT;
     htp.p(l_out);
 END;]');
 

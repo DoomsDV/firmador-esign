@@ -213,9 +213,12 @@ curl -sS -X POST "https://api-staging.etick.uno/v1/documents" \
 ### Cancelar un documento
 
 **URL:** `https://api-staging.etick.uno/v1/documents/{cdc}/cancel` (homologación) · `https://api.etick.uno/v1/documents/{cdc}/cancel` (producción)  
+**Header obligatorio:** `Idempotency-Key: cancelacion-<referencia-unica>` (máximo 128 caracteres)
 **Body:** `{ "motivo": "Error en los datos del documento electrónico" }` (5–500 caracteres)
 
 > ⚠️ Este `motivo` es **texto libre**, distinto del `motivo` entero (catálogo SIFEN) usado en NCE/NDE dentro de `POST /v1/documents`. Mismo nombre de campo, conceptos distintos.
+
+La misma clave con el mismo CDC y motivo reproduce el resultado persistido. Sin clave se devuelve `400 IDEMPOTENCY_KEY_REQUIRED`; una cancelación concurrente devuelve `409 IDEMPOTENCY_IN_PROGRESS` y reutilizarla con otro CDC o motivo devuelve `409 IDEMPOTENCY_KEY_REUSED`.
 
 ### Inutilizar numeración
 

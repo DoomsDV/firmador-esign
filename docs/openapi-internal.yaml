@@ -146,6 +146,36 @@ paths:
       responses:
         "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
 
+  /internal/v1/documents/pending-retry/claim:
+    post:
+      tags: [Interno]
+      summary: Reclamar documentos FIRMADO con lease
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [owner] } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+
+  /internal/v1/documents/pending-retry/failure:
+    post:
+      tags: [Interno]
+      summary: Registrar fallo de un retry y liberar su lease
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [client_id, cdc, owner, reason] } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+
+  /internal/v1/documents/pending-retry/release:
+    post:
+      tags: [Interno]
+      summary: Liberar lease de un documento FIRMADO
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [client_id, cdc, owner] } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+
   /internal/v1/documents/reconciliation/context:
     post:
       tags: [Interno]
@@ -199,6 +229,26 @@ paths:
         content:
           application/json:
             schema: { type: object, required: [client_id, environment, idempotency_key], properties: { client_id: { type: integer }, environment: { type: string, enum: [TEST, PROD] }, idempotency_key: { type: string } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+
+  /internal/v1/events/idempotency/claim:
+    post:
+      tags: [Interno]
+      summary: Reclamar atómicamente la idempotencia de un evento
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [client_id, environment, cdc, event_id, tipo_evento, idempotency_key, request_sha256] } } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
+
+  /internal/v1/events/idempotency/release:
+    post:
+      tags: [Interno]
+      summary: Liberar claim de evento antes de persistir XML firmado
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [client_id, environment, idempotency_key] } } }
       responses:
         "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Envelope" } } } }
 

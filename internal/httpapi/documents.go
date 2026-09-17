@@ -448,49 +448,85 @@ func (s *Server) handleCancelDocument(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "INVALID_JSON", "body inválido: "+err.Error())
 		return
 	}
+	motivo := normalizeCancelMotivo(req.Motivo)
 	idemKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
-	if idemKey != "" {
-		prior, err := s.resolver.ORDS().FindEventByIdempotencyKey(ctx, cfg.ClientID, cfg.EnvUpper(), idemKey)
-		if err != nil {
-			writeErr(w, http.StatusBadGateway, "IDEMPOTENCY_ERROR", err.Error())
-			return
-		}
-		if prior.Found {
-			writeOK(w, http.StatusOK, eventResponse{Estado: prior.Estado, CodRes: prior.CodRes, ProtAut: prior.ProtAut, Mensaje: prior.Motivo, Ambiente: cfg.EnvUpper()})
-			return
-		}
-	}
-	local, err := s.resolver.ORDS().GetReconcileContext(ctx, cfg.ClientID, cdc)
-	if err != nil {
-		writeDocumentContextErr(w, err)
+	if idemKey == "" {
+		writeErr(w, http.StatusBadRequest, "IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key es obligatorio para cancelar")
 		return
 	}
-	if local.Environment != cfg.EnvUpper() {
-		writeErr(w, http.StatusConflict, "ENVIRONMENT_MISMATCH", "el documento pertenece a otro ambiente")
-		return
-	}
-	if local.Estado != "APROBADO" {
-		writeErr(w, http.StatusConflict, "INVALID_DOCUMENT_STATE", "solo se pueden cancelar documentos APROBADO")
-		return
-	}
-
-	ev, err := sifen.NewEventoCancelacion(eventIDFor(idemKey), cdc, req.Motivo, s.fechaFirma())
+	requestSHA256 := hashCancelRequest(cdc, motivo)
+	eventID := eventIDFor(cfg.EnvUpper(), "CANCELACION", idemKey)
+	ev, err := sifen.NewEventoCancelacion(eventID, cdc, motivo, s.fechaFirma())
 	if err != nil {
 		writeErr(w, http.StatusUnprocessableEntity, "INVALID_EVENT", err.Error())
 		return
 	}
+	claim, err := s.resolver.ORDS().ClaimEventIdempotency(ctx, cfg.ClientID, cfg.EnvUpper(), cdc, ev.Id, "CANCELACION", idemKey, motivo, requestSHA256)
+	if err != nil {
+		var ordsErr *tenant.ORDSError
+		if errors.As(err, &ordsErr) && ordsErr.HTTPStatus == http.StatusConflict {
+			code := "CANCEL_CONFLICT"
+			if strings.Contains(strings.ToLower(ordsErr.Message), "reutilizada") {
+				code = "IDEMPOTENCY_KEY_REUSED"
+			}
+			writeErr(w, http.StatusConflict, code, ordsErr.Message)
+			return
+		}
+		writeErr(w, http.StatusBadGateway, "IDEMPOTENCY_ERROR", err.Error())
+		return
+	}
+	switch claim.ClaimStatus {
+	case "COMPLETED":
+		writeOK(w, http.StatusOK, eventResponse{Estado: claim.Estado, CodRes: claim.CodRes, ProtAut: claim.ProtAut, Mensaje: claim.MensajeRes, Ambiente: cfg.EnvUpper()})
+		return
+	case "IN_FLIGHT":
+		writeErr(w, http.StatusConflict, "IDEMPOTENCY_IN_PROGRESS", "ya hay una cancelación en curso con esta Idempotency-Key")
+		return
+	case "ACQUIRED":
+		// El claim queda reservado hasta que el XML firmado se persista.
+	default:
+		writeErr(w, http.StatusBadGateway, "IDEMPOTENCY_ERROR", "respuesta de claim de evento inválida")
+		return
+	}
 
+	claimed := true
+	durableEventStarted := false
+	defer func() {
+		if !claimed || durableEventStarted {
+			return
+		}
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := s.resolver.ORDS().ReleaseEventIdempotency(releaseCtx, cfg.ClientID, cfg.EnvUpper(), idemKey); err != nil {
+			log.Printf("[warn] release event idempotency key for client %d: %v", cfg.ClientID, err)
+		}
+	}()
 	client, firmado, err := s.prepareEvento(ctx, cfg, ev)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, "SIGN_ERROR", err.Error())
 		return
 	}
 	record := tenant.EventRecord{ClientID: cfg.ClientID, CDC: cdc, Environment: cfg.EnvUpper(), EventID: ev.Id,
-		IdempotencyKey: idemKey, TipoEvento: "CANCELACION", Estado: "FIRMADO", Motivo: req.Motivo, XMLFirmado: string(firmado)}
+		IdempotencyKey: idemKey, TipoEvento: "CANCELACION", Estado: "FIRMADO", Motivo: motivo,
+		RequestSHA256: requestSHA256, XMLFirmado: string(firmado)}
 	if err := s.resolver.ORDS().RegisterEvent(ctx, record); err != nil {
+		pending := record
+		pending.Estado = "PENDIENTE_CONCILIACION"
+		pending.RecoveryRequired = true
+		pending.RecoveryReason = "persistencia del XML firmado no confirmada; requiere conciliación"
+		if persistErr := s.resolver.ORDS().RegisterEvent(ctx, pending); persistErr == nil {
+			claimed = false
+			durableEventStarted = true
+			writeOK(w, http.StatusAccepted, eventResponse{Estado: pending.Estado, Mensaje: "evento firmado; requiere conciliación", Ambiente: cfg.EnvUpper()})
+			return
+		} else {
+			log.Printf("[critical] persistir cancelación pendiente cdc=%s: %v", cdc, persistErr)
+		}
 		writeErr(w, http.StatusBadGateway, "PERSISTENCE_ERROR", "no se pudo guardar el evento firmado: "+err.Error())
 		return
 	}
+	claimed = false
+	durableEventStarted = true
 
 	res, body, err := s.sendEventoSigned(ctx, client, ev, firmado)
 	if err != nil {
@@ -501,7 +537,7 @@ func (s *Server) handleCancelDocument(w http.ResponseWriter, r *http.Request) {
 		writeOK(w, http.StatusAccepted, eventResponse{Estado: record.Estado, Mensaje: "evento firmado; requiere conciliación", Ambiente: cfg.EnvUpper()})
 		return
 	}
-	record.CodRes, record.ProtAut, record.ResponseXML = res.CodRes, res.ProtAut, string(body)
+	record.CodRes, record.ProtAut, record.MensajeRes, record.ResponseXML = res.CodRes, res.ProtAut, res.MsgRes, string(body)
 	record.Estado = estadoEvento(res.CodRes)
 	if strings.TrimSpace(res.CodRes) == "" {
 		record.Estado, record.RecoveryRequired, record.RecoveryReason = "PENDIENTE_CONCILIACION", true, "respuesta SIFEN sin código"
@@ -655,11 +691,20 @@ func eventID() int {
 	return int(time.Now().Unix() % 1000000000)
 }
 
-func eventIDFor(key string) int {
+func hashCancelRequest(cdc, motivo string) string {
+	sum := sha256.Sum256([]byte("CANCELACION\n" + strings.TrimSpace(cdc) + "\n" + normalizeCancelMotivo(motivo)))
+	return hex.EncodeToString(sum[:])
+}
+
+func normalizeCancelMotivo(motivo string) string {
+	return strings.Join(strings.Fields(motivo), " ")
+}
+
+func eventIDFor(environment, eventType, key string) int {
 	if key == "" {
 		return eventID()
 	}
-	sum := sha256.Sum256([]byte(key))
+	sum := sha256.Sum256([]byte(strings.ToUpper(environment) + "\n" + strings.ToUpper(eventType) + "\n" + key))
 	n := int(sum[0])<<24 | int(sum[1])<<16 | int(sum[2])<<8 | int(sum[3])
 	return n%999999999 + 1
 }

@@ -421,9 +421,12 @@ Errores específicos: `NO_CERTIFICATE` (422), `INVALID_OPERATION` (422, est/punt
 Request:
 
 ```json
-{ "motivo": "Error en los datos del documento electrónico" }
+{
+  "motivo": "Error en los datos del documento electrónico"
+}
 ```
 
+- Header obligatorio: `Idempotency-Key` (máximo 128 caracteres).
 - `motivo`: texto libre 5–500 caracteres (`mOtEve`).
 - El `{cdc}` es el CDC (44 dígitos) del documento aprobado a cancelar.
 
@@ -437,6 +440,7 @@ Response `200 OK`:
 ```
 
 El evento se registra en `document_event` (`tipo_evento = CANCELACION`); el documento pasa a `CANCELADO` si `codRes=0600`.
+Sin la clave se devuelve `400 IDEMPOTENCY_KEY_REQUIRED`; una ejecución concurrente devuelve `409 IDEMPOTENCY_IN_PROGRESS` y una reutilización con otro CDC o motivo devuelve `409 IDEMPOTENCY_KEY_REUSED`.
 
 ### 4.4 `POST /v1/events/inutilizacion`
 

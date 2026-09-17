@@ -152,7 +152,7 @@ paths:
           schema: { type: string, minLength: 44, maxLength: 44 }
         - name: Idempotency-Key
           in: header
-          required: false
+          required: true
           schema: { type: string, maxLength: 128 }
       requestBody:
         required: true
@@ -184,6 +184,8 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/Unprocessable" }
         "502": { $ref: "#/components/responses/BadGateway" }
+        "400": { description: "IDEMPOTENCY_KEY_REQUIRED si falta la clave; INVALID_JSON si el body es inválido." }
+        "409": { description: "IDEMPOTENCY_IN_PROGRESS si la clave está en curso; IDEMPOTENCY_KEY_REUSED si cambia CDC o motivo; o conflicto de estado." }
 
   /v1/documents/{cdc}/reconcile:
     post:
@@ -473,4 +475,5 @@ components:
                 codRes: { type: string }
                 protAut: { type: string }
                 mensaje: { type: string }
+                reconciledAt: { type: string, format: date-time }
                 requiresReconciliation: { type: boolean }

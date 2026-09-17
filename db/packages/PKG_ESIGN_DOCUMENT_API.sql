@@ -39,6 +39,33 @@ CREATE OR REPLACE PACKAGE pkg_esign_document_api AS
     p_reason    IN VARCHAR2,
     p_out       OUT CLOB
   );
+  -- Reclama documentos FIRMADO con lease para evitar doble procesamiento.
+  PROCEDURE pr_claim_pending_retry(
+    p_limit         IN NUMBER,
+    p_owner         IN VARCHAR2,
+    p_lease_seconds IN NUMBER,
+    p_max_retry     IN NUMBER,
+    p_allow_prod    IN NUMBER,
+    p_out           OUT CLOB
+  );
+  PROCEDURE pr_record_retry_failure(
+    p_client_id IN NUMBER,
+    p_cdc       IN VARCHAR2,
+    p_owner     IN VARCHAR2,
+    p_reason    IN VARCHAR2,
+    p_max_retry IN NUMBER,
+    p_out       OUT CLOB
+  );
+  PROCEDURE pr_release_pending_retry(
+    p_client_id IN NUMBER,
+    p_cdc       IN VARCHAR2,
+    p_owner     IN VARCHAR2,
+    p_out       OUT CLOB
+  );
+
+  -- Claim atómico para eventos antes de firmar y enviar a SIFEN.
+  PROCEDURE pr_claim_event_idempotency(p_client_id IN NUMBER, p_body IN CLOB, p_out OUT CLOB);
+  PROCEDURE pr_release_event_idempotency(p_client_id IN NUMBER, p_body IN CLOB, p_out OUT CLOB);
 
   -- Documentos APROBADO con XML/QR pero sin tarea KuDE. Bypass VPD para el worker.
   PROCEDURE pr_list_kude_recovery(p_limit IN NUMBER, p_out OUT CLOB);
@@ -66,9 +93,37 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
     l_warning INTEGER;
     l_doc_estado document.estado%TYPE;
     l_estado document.estado%TYPE := UPPER(TRIM(json_value(p_body, '$.estado')));
+    l_from_retry VARCHAR2(5) := NVL(json_value(p_body, '$.from_retry'), 'false');
+    l_retry_owner VARCHAR2(128) := NULLIF(TRIM(json_value(p_body, '$.retry_lease_owner')), '');
+    l_stored_retry_owner document.retry_lease_owner%TYPE;
+    l_stored_retry_until document.retry_lease_until%TYPE;
     l_data CLOB;
   BEGIN
     pkg_esign_session.set_client(p_client_id);
+
+    IF l_from_retry IN ('true', '1') THEN
+      IF l_retry_owner IS NULL THEN
+        raise_application_error(pkg_esign_http.c_ora_bad_request,
+          'retry_lease_owner es obligatorio para una recuperación');
+      END IF;
+      BEGIN
+        SELECT retry_lease_owner, retry_lease_until
+          INTO l_stored_retry_owner, l_stored_retry_until
+          FROM document
+         WHERE client_id = p_client_id AND cdc = l_cdc
+         FOR UPDATE;
+      EXCEPTION WHEN NO_DATA_FOUND THEN
+        raise_application_error(pkg_esign_http.c_ora_not_found,
+          'documento no encontrado para recuperación');
+      END;
+      IF l_stored_retry_owner IS NULL
+         OR l_stored_retry_owner <> l_retry_owner
+         OR l_stored_retry_until IS NULL
+         OR l_stored_retry_until < SYSTIMESTAMP THEN
+        raise_application_error(pkg_esign_http.c_ora_conflict,
+          'lease de recuperación inválido o vencido');
+      END IF;
+    END IF;
 
     MERGE /*+ no_parallel */ INTO document d
     USING (SELECT p_client_id AS cid, l_cdc AS cdc FROM dual) s
@@ -97,18 +152,40 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
                     END,
       idempotency_key = NVL(d.idempotency_key, NULLIF(TRIM(l_idem), '')),
       retry_requested = CASE
-                          WHEN NVL(json_value(p_body, '$.from_retry'), 'false') IN ('true','1')
+                          WHEN l_from_retry IN ('true','1')
                           THEN 0
                           WHEN NVL(json_value(p_body, '$.retry_requested'), 'false') IN ('true','1')
                           THEN 1
                           ELSE d.retry_requested
                         END,
-      retry_count = CASE
-                      WHEN NVL(json_value(p_body, '$.from_retry'), 'false') IN ('true','1')
-                      THEN NVL(d.retry_count, 0) + 1 ELSE d.retry_count END,
+      retry_count = d.retry_count,
       last_retry_at = CASE
-                        WHEN NVL(json_value(p_body, '$.from_retry'), 'false') IN ('true','1')
+                        WHEN l_from_retry IN ('true','1')
                         THEN SYSTIMESTAMP ELSE d.last_retry_at END
+      ,retry_lease_owner = CASE
+                             WHEN l_from_retry IN ('true','1') AND (l_retry_owner IS NULL OR d.retry_lease_owner = l_retry_owner) THEN NULL
+                             ELSE d.retry_lease_owner
+                           END
+      ,retry_lease_until = CASE
+                             WHEN l_from_retry IN ('true','1') AND (l_retry_owner IS NULL OR d.retry_lease_owner = l_retry_owner) THEN NULL
+                             ELSE d.retry_lease_until
+                           END
+      ,last_retry_error = CASE
+                           WHEN l_from_retry IN ('true','1') AND (l_retry_owner IS NULL OR d.retry_lease_owner = l_retry_owner) THEN NULL
+                           ELSE d.last_retry_error
+                         END
+      ,recovery_required = CASE
+                             WHEN l_from_retry IN ('true','1') AND (l_retry_owner IS NULL OR d.retry_lease_owner = l_retry_owner) THEN 0
+                             ELSE d.recovery_required
+                           END
+      ,recovery_reason = CASE
+                          WHEN l_from_retry IN ('true','1') AND (l_retry_owner IS NULL OR d.retry_lease_owner = l_retry_owner) THEN NULL
+                          ELSE d.recovery_reason
+                        END
+      ,recovery_marked_at = CASE
+                             WHEN l_from_retry IN ('true','1') AND (l_retry_owner IS NULL OR d.retry_lease_owner = l_retry_owner) THEN NULL
+                             ELSE d.recovery_marked_at
+                           END
     WHEN NOT MATCHED THEN INSERT
       (client_id, environment, tipo_de, cdc, num_documento, establecimiento, punto_expedicion,
        receptor_nombre, receptor_doc, moneda, total_operacion, estado, cod_res, prot_aut, mensaje_res,
@@ -519,6 +596,186 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
     p_out := pkg_esign_util.fn_ok(l_data);
   END pr_release_idempotency;
 
+  PROCEDURE pr_claim_event_idempotency(p_client_id IN NUMBER, p_body IN CLOB, p_out OUT CLOB) IS
+    l_env VARCHAR2(4) := UPPER(TRIM(json_value(p_body, '$.environment')));
+    l_key VARCHAR2(128) := TRIM(json_value(p_body, '$.idempotency_key'));
+    l_cdc VARCHAR2(44) := TRIM(json_value(p_body, '$.cdc'));
+    l_event_id VARCHAR2(30) := TRIM(json_value(p_body, '$.event_id'));
+    l_tipo VARCHAR2(20) := UPPER(TRIM(json_value(p_body, '$.tipo_evento')));
+    l_motivo VARCHAR2(500) := json_value(p_body, '$.motivo');
+    l_request_sha VARCHAR2(64) := LOWER(TRIM(json_value(p_body, '$.request_sha256')));
+    l_existing_sha VARCHAR2(64);
+    l_existing_cdc VARCHAR2(44);
+    l_existing_doc_id document_event.document_id%TYPE;
+    l_existing_event_id VARCHAR2(30);
+    l_existing_tipo VARCHAR2(20);
+    l_existing_motivo VARCHAR2(500);
+    l_existing_estado VARCHAR2(20);
+    l_existing_lease TIMESTAMP(6) WITH TIME ZONE;
+    l_existing_xml CLOB;
+    l_doc_id document.id_document%TYPE;
+    l_doc_env document.environment%TYPE;
+    l_doc_estado document.estado%TYPE;
+    l_data CLOB;
+    l_found BOOLEAN := FALSE;
+  BEGIN
+    pkg_esign_session.set_client(p_client_id);
+    IF l_env IS NULL OR l_env NOT IN ('TEST', 'PROD') OR l_key IS NULL OR l_event_id IS NULL OR l_request_sha IS NULL THEN
+      raise_application_error(pkg_esign_http.c_ora_bad_request,
+        'environment, event_id, idempotency_key y request_sha256 son obligatorios');
+    END IF;
+    IF l_tipo IS NULL OR l_tipo <> 'CANCELACION' OR l_cdc IS NULL THEN
+      raise_application_error(pkg_esign_http.c_ora_bad_request,
+        'el claim de evento solo admite cancelaciones con CDC');
+    END IF;
+
+    BEGIN
+      SELECT document_id, event_id, tipo_evento, estado, request_sha256, lease_until, xml_firmado, motivo
+        INTO l_existing_doc_id, l_existing_event_id, l_existing_tipo, l_existing_estado,
+             l_existing_sha, l_existing_lease, l_existing_xml, l_existing_motivo
+        FROM document_event
+       WHERE client_id = p_client_id AND environment = l_env AND idempotency_key = l_key
+       FOR UPDATE;
+      l_found := TRUE;
+    EXCEPTION WHEN NO_DATA_FOUND THEN NULL;
+    END;
+
+    IF l_found THEN
+      BEGIN
+        SELECT cdc INTO l_existing_cdc
+          FROM document
+         WHERE id_document = l_existing_doc_id;
+      EXCEPTION WHEN NO_DATA_FOUND THEN
+        l_existing_cdc := NULL;
+      END;
+      IF (l_existing_sha IS NOT NULL AND l_existing_sha <> l_request_sha)
+         OR NVL(l_existing_cdc, CHR(0)) <> l_cdc
+         OR l_existing_tipo <> l_tipo
+         OR NVL(l_existing_motivo, CHR(0)) <> NVL(l_motivo, CHR(0)) THEN
+        raise_application_error(pkg_esign_http.c_ora_conflict,
+          'Idempotency-Key reutilizada con otro CDC, evento o payload');
+      END IF;
+
+      IF l_existing_estado IN ('REGISTRADO', 'RECHAZADO') THEN
+        SELECT JSON_OBJECT(
+                 'claim_status' VALUE 'COMPLETED', 'found' VALUE 'true' FORMAT JSON,
+                 'event_id' VALUE event_id, 'estado' VALUE estado, 'cod_res' VALUE cod_res,
+                 'prot_aut' VALUE prot_aut, 'mensaje_res' VALUE mensaje_res,
+                 'motivo' VALUE motivo, 'recovery_required' VALUE CASE WHEN recovery_required = 1 THEN 'true' ELSE 'false' END FORMAT JSON
+                 RETURNING CLOB)
+          INTO l_data FROM document_event
+         WHERE client_id = p_client_id AND environment = l_env AND idempotency_key = l_key;
+        p_out := pkg_esign_util.fn_ok(l_data);
+        RETURN;
+      END IF;
+
+      IF l_existing_estado = 'CLAIMED' AND l_existing_xml IS NULL
+         AND (l_existing_lease IS NULL OR l_existing_lease < SYSTIMESTAMP) THEN
+        BEGIN
+          SELECT estado INTO l_doc_estado
+            FROM document
+           WHERE id_document = l_existing_doc_id;
+        EXCEPTION WHEN NO_DATA_FOUND THEN
+          raise_application_error(pkg_esign_http.c_ora_conflict, 'documento del claim inexistente');
+        END;
+        IF l_doc_estado <> 'APROBADO' THEN
+          raise_application_error(pkg_esign_http.c_ora_conflict,
+            'solo se puede reasignar un claim para documentos APROBADO');
+        END IF;
+        UPDATE document_event
+           SET lease_until = SYSTIMESTAMP + NUMTODSINTERVAL(2, 'MINUTE'),
+               motivo = l_motivo,
+               updated_at = SYSTIMESTAMP
+         WHERE client_id = p_client_id AND environment = l_env AND idempotency_key = l_key;
+        SELECT JSON_OBJECT('claim_status' VALUE 'ACQUIRED', 'found' VALUE 'false' FORMAT JSON RETURNING CLOB)
+          INTO l_data FROM dual;
+        p_out := pkg_esign_util.fn_ok(l_data);
+        RETURN;
+      END IF;
+
+      SELECT JSON_OBJECT('claim_status' VALUE 'IN_FLIGHT', 'found' VALUE 'false' FORMAT JSON,
+                         'phase' VALUE l_existing_estado RETURNING CLOB)
+        INTO l_data FROM dual;
+      p_out := pkg_esign_util.fn_ok(l_data);
+      RETURN;
+    END IF;
+
+    BEGIN
+      SELECT id_document, environment, estado
+        INTO l_doc_id, l_doc_env, l_doc_estado
+        FROM document
+       WHERE client_id = p_client_id AND cdc = l_cdc;
+    EXCEPTION WHEN NO_DATA_FOUND THEN
+      raise_application_error(pkg_esign_http.c_ora_not_found, 'documento inexistente');
+    END;
+    IF l_doc_env <> l_env THEN
+      raise_application_error(pkg_esign_http.c_ora_conflict, 'CDC y ambiente incoherentes');
+    END IF;
+    IF l_doc_estado <> 'APROBADO' THEN
+      raise_application_error(pkg_esign_http.c_ora_conflict, 'solo se pueden cancelar documentos APROBADO');
+    END IF;
+
+    BEGIN
+      INSERT INTO document_event (
+        document_id, client_id, environment, event_id, idempotency_key, tipo_evento,
+        estado, motivo, request_sha256, lease_until
+      ) VALUES (
+        l_doc_id, p_client_id, l_env, l_event_id, l_key, l_tipo,
+        'CLAIMED', l_motivo, l_request_sha, SYSTIMESTAMP + NUMTODSINTERVAL(2, 'MINUTE')
+      );
+    EXCEPTION
+      WHEN DUP_VAL_ON_INDEX THEN
+        BEGIN
+          SELECT document_id, event_id, tipo_evento, estado, request_sha256, motivo
+            INTO l_existing_doc_id, l_existing_event_id, l_existing_tipo, l_existing_estado, l_existing_sha, l_existing_motivo
+            FROM document_event
+           WHERE client_id = p_client_id AND environment = l_env AND idempotency_key = l_key
+           FOR UPDATE;
+        EXCEPTION
+          WHEN NO_DATA_FOUND THEN
+            raise_application_error(pkg_esign_http.c_ora_conflict, 'event_id ya utilizado por otro evento');
+        END;
+        BEGIN
+          SELECT cdc INTO l_existing_cdc
+            FROM document
+           WHERE id_document = l_existing_doc_id;
+        EXCEPTION WHEN NO_DATA_FOUND THEN
+          l_existing_cdc := NULL;
+        END;
+        IF (l_existing_sha IS NOT NULL AND l_existing_sha <> l_request_sha)
+           OR NVL(l_existing_cdc, CHR(0)) <> l_cdc OR l_existing_tipo <> l_tipo
+           OR NVL(l_existing_motivo, CHR(0)) <> NVL(l_motivo, CHR(0)) THEN
+          raise_application_error(pkg_esign_http.c_ora_conflict,
+            'Idempotency-Key reutilizada con otro CDC, evento o payload');
+        END IF;
+        SELECT JSON_OBJECT('claim_status' VALUE 'IN_FLIGHT', 'found' VALUE 'false' FORMAT JSON,
+                           'phase' VALUE l_existing_estado RETURNING CLOB)
+          INTO l_data FROM dual;
+        p_out := pkg_esign_util.fn_ok(l_data);
+        RETURN;
+    END;
+
+    SELECT JSON_OBJECT('claim_status' VALUE 'ACQUIRED', 'found' VALUE 'false' FORMAT JSON RETURNING CLOB)
+      INTO l_data FROM dual;
+    p_out := pkg_esign_util.fn_ok(l_data);
+  END pr_claim_event_idempotency;
+
+  PROCEDURE pr_release_event_idempotency(p_client_id IN NUMBER, p_body IN CLOB, p_out OUT CLOB) IS
+    l_env VARCHAR2(4) := UPPER(TRIM(json_value(p_body, '$.environment')));
+    l_key VARCHAR2(128) := TRIM(json_value(p_body, '$.idempotency_key'));
+    l_released NUMBER;
+    l_data CLOB;
+  BEGIN
+    pkg_esign_session.set_client(p_client_id);
+    DELETE FROM document_event
+     WHERE client_id = p_client_id AND environment = l_env AND idempotency_key = l_key
+       AND estado = 'CLAIMED' AND xml_firmado IS NULL;
+    l_released := SQL%ROWCOUNT;
+    SELECT JSON_OBJECT('released' VALUE CASE WHEN l_released = 1 THEN 'true' ELSE 'false' END FORMAT JSON RETURNING CLOB)
+      INTO l_data FROM dual;
+    p_out := pkg_esign_util.fn_ok(l_data);
+  END pr_release_event_idempotency;
+
   PROCEDURE pr_register_event(p_client_id IN NUMBER, p_body IN CLOB, p_out OUT CLOB) IS
     l_doc_id document.id_document%TYPE;
     l_doc_env document.environment%TYPE;
@@ -527,16 +784,21 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
     l_event_id VARCHAR2(30) := TRIM(json_value(p_body, '$.event_id'));
     l_estado VARCHAR2(20) := UPPER(TRIM(json_value(p_body, '$.estado')));
     l_tipo VARCHAR2(20) := UPPER(TRIM(json_value(p_body, '$.tipo_evento')));
+    l_xml CLOB := json_value(p_body, '$.xml_firmado' RETURNING CLOB);
+    l_xml_sha VARCHAR2(64) := LOWER(TRIM(json_value(p_body, '$.xml_sha256')));
     l_data CLOB;
   BEGIN
     pkg_esign_session.set_client(p_client_id);
 
-    IF l_env NOT IN ('TEST', 'PROD') OR l_event_id IS NULL THEN
+    IF l_env IS NULL OR l_env NOT IN ('TEST', 'PROD') OR l_event_id IS NULL THEN
       raise_application_error(pkg_esign_http.c_ora_bad_request,
         'environment y event_id son obligatorios');
     END IF;
-    IF l_tipo NOT IN ('CANCELACION', 'INUTILIZACION') THEN
+    IF l_tipo IS NULL OR l_tipo NOT IN ('CANCELACION', 'INUTILIZACION') THEN
       raise_application_error(pkg_esign_http.c_ora_bad_request, 'tipo_evento inválido');
+    END IF;
+    IF l_estado IS NULL OR l_estado NOT IN ('CLAIMED', 'FIRMADO', 'PENDIENTE_CONCILIACION', 'REGISTRADO', 'RECHAZADO') THEN
+      raise_application_error(pkg_esign_http.c_ora_bad_request, 'estado de evento inválido');
     END IF;
 
     IF l_cdc IS NOT NULL THEN
@@ -553,24 +815,46 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
 
     MERGE /*+ no_parallel */ INTO document_event e
     USING (SELECT p_client_id AS client_id, l_event_id AS event_id FROM dual) s
-    ON (e.client_id = s.client_id AND e.event_id = s.event_id)
+    ON (e.client_id = s.client_id
+        AND e.event_id = s.event_id
+        AND e.environment = l_env
+        AND e.tipo_evento = l_tipo
+        AND NVL(e.idempotency_key, CHR(0)) = NVL(NULLIF(TRIM(json_value(p_body, '$.idempotency_key')), ''), CHR(0))
+        AND (l_doc_id IS NULL OR e.document_id = l_doc_id))
     WHEN MATCHED THEN UPDATE SET
-      estado = NVL(l_estado, e.estado),
+      estado = CASE
+                 WHEN e.estado IN ('REGISTRADO', 'RECHAZADO') THEN e.estado
+                 WHEN e.estado = 'PENDIENTE_CONCILIACION' AND l_estado IN ('CLAIMED', 'FIRMADO') THEN e.estado
+                 WHEN e.estado = 'FIRMADO' AND l_estado = 'CLAIMED' THEN e.estado
+                 ELSE l_estado
+               END,
       cod_res = NVL(json_value(p_body, '$.cod_res'), e.cod_res),
       prot_aut = NVL(json_value(p_body, '$.prot_aut'), e.prot_aut),
+      mensaje_res = NVL(json_value(p_body, '$.mensaje_res'), e.mensaje_res),
       motivo = NVL(json_value(p_body, '$.motivo'), e.motivo),
+      xml_firmado = CASE WHEN e.xml_firmado IS NULL THEN l_xml ELSE e.xml_firmado END,
+      xml_sha256 = CASE WHEN e.xml_firmado IS NULL THEN NVL(l_xml_sha, e.xml_sha256) ELSE e.xml_sha256 END,
+      request_sha256 = NVL(json_value(p_body, '$.request_sha256'), e.request_sha256),
       response_xml = NVL(json_value(p_body, '$.response_xml' RETURNING CLOB), e.response_xml),
-      recovery_required = CASE WHEN NVL(json_value(p_body, '$.recovery_required'), 'false') IN ('true','1') THEN 1 ELSE 0 END,
-      recovery_reason = json_value(p_body, '$.recovery_reason'),
+      recovery_required = CASE
+                            WHEN e.estado IN ('REGISTRADO', 'RECHAZADO') THEN e.recovery_required
+                            WHEN NVL(json_value(p_body, '$.recovery_required'), 'false') IN ('true','1') THEN 1
+                            ELSE 0
+                          END,
+      recovery_reason = CASE
+                          WHEN e.estado IN ('REGISTRADO', 'RECHAZADO') THEN e.recovery_reason
+                          ELSE json_value(p_body, '$.recovery_reason')
+                        END,
+      lease_until = CASE WHEN l_estado = 'CLAIMED' THEN e.lease_until ELSE NULL END,
       updated_at = SYSTIMESTAMP
     WHEN NOT MATCHED THEN INSERT (
       document_id, client_id, environment, event_id, idempotency_key, tipo_evento,
-      estado, cod_res, prot_aut, motivo, xml_firmado, xml_sha256, response_xml,
+      estado, cod_res, prot_aut, mensaje_res, motivo, xml_firmado, xml_sha256, request_sha256, response_xml,
       recovery_required, recovery_reason
     ) VALUES (
       l_doc_id, p_client_id, l_env, l_event_id, NULLIF(TRIM(json_value(p_body, '$.idempotency_key')), ''), l_tipo,
-      l_estado, json_value(p_body, '$.cod_res'), json_value(p_body, '$.prot_aut'), json_value(p_body, '$.motivo'),
-      json_value(p_body, '$.xml_firmado' RETURNING CLOB), json_value(p_body, '$.xml_sha256'),
+      l_estado, json_value(p_body, '$.cod_res'), json_value(p_body, '$.prot_aut'), json_value(p_body, '$.mensaje_res'), json_value(p_body, '$.motivo'),
+      l_xml, l_xml_sha, json_value(p_body, '$.request_sha256'),
       json_value(p_body, '$.response_xml' RETURNING CLOB),
       CASE WHEN NVL(json_value(p_body, '$.recovery_required'), 'false') IN ('true','1') THEN 1 ELSE 0 END,
       json_value(p_body, '$.recovery_reason')
@@ -602,7 +886,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
       BEGIN
         SELECT JSON_OBJECT(
                  'found' VALUE TRUE, 'event_id' VALUE event_id, 'estado' VALUE estado,
-                 'cod_res' VALUE cod_res, 'prot_aut' VALUE prot_aut, 'motivo' VALUE motivo,
+                 'cod_res' VALUE cod_res, 'prot_aut' VALUE prot_aut, 'mensaje_res' VALUE mensaje_res, 'motivo' VALUE motivo,
                  'recovery_required' VALUE CASE WHEN recovery_required = 1 THEN 'true' ELSE 'false' END FORMAT JSON
                  RETURNING CLOB)
           INTO l_data FROM document_event
@@ -622,6 +906,8 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
     BEGIN
       SELECT JSON_OBJECT(
                'cdc' VALUE cdc, 'environment' VALUE environment, 'estado' VALUE estado,
+               'cod_res' VALUE cod_res, 'prot_aut' VALUE prot_aut, 'mensaje_res' VALUE mensaje_res,
+               'reconciled_at' VALUE TO_CHAR(reconciled_at, 'YYYY-MM-DD"T"HH24:MI:SSTZH:TZM'),
                'retry_requested' VALUE CASE WHEN retry_requested = 1 THEN 'true' ELSE 'false' END FORMAT JSON,
                'recovery_required' VALUE CASE WHEN recovery_required = 1 THEN 'true' ELSE 'false' END FORMAT JSON,
                'recovery_reason' VALUE recovery_reason
@@ -637,29 +923,48 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
     l_cdc VARCHAR2(44) := json_value(p_body, '$.cdc');
     l_env VARCHAR2(4) := UPPER(TRIM(json_value(p_body, '$.environment')));
     l_remote_estado VARCHAR2(20) := UPPER(TRIM(json_value(p_body, '$.remote_estado')));
+    l_retry_owner VARCHAR2(128) := NULLIF(TRIM(json_value(p_body, '$.retry_lease_owner')), '');
     l_current document.estado%TYPE;
+    l_effective_state document.estado%TYPE;
     l_data CLOB;
   BEGIN
     pkg_esign_session.set_client(p_client_id);
-    IF l_env NOT IN ('TEST', 'PROD') OR l_remote_estado NOT IN ('APROBADO', 'CANCELADO') THEN
+    IF l_env IS NULL OR l_env NOT IN ('TEST', 'PROD')
+       OR l_remote_estado IS NULL OR l_remote_estado NOT IN ('APROBADO', 'CANCELADO') THEN
       raise_application_error(pkg_esign_http.c_ora_bad_request, 'ambiente o estado remoto inválido');
     END IF;
     SELECT estado INTO l_current FROM document WHERE client_id = p_client_id AND cdc = l_cdc AND environment = l_env FOR UPDATE;
 
-    IF l_current <> 'CANCELADO' THEN
-      UPDATE /*+ no_parallel */ document
-         SET estado = l_remote_estado,
-             prot_aut = NVL(json_value(p_body, '$.prot_aut'), prot_aut),
-             mensaje_res = NVL(json_value(p_body, '$.mensaje_res'), mensaje_res),
-             retry_requested = 0,
-             recovery_required = 0,
-             recovery_reason = NULL,
-             recovery_marked_at = NULL
-       WHERE client_id = p_client_id AND cdc = l_cdc AND environment = l_env;
+    l_effective_state := l_remote_estado;
+    IF l_current IN ('CANCELADO', 'RECHAZADO') THEN
+      l_effective_state := l_current;
+    END IF;
+
+    UPDATE /*+ no_parallel */ document
+       SET estado = l_effective_state,
+           cod_res = NVL(json_value(p_body, '$.cod_res'), cod_res),
+           prot_aut = NVL(json_value(p_body, '$.prot_aut'), prot_aut),
+           mensaje_res = NVL(json_value(p_body, '$.mensaje_res'), mensaje_res),
+           retry_requested = 0,
+           retry_lease_owner = NULL,
+           retry_lease_until = NULL,
+           last_retry_error = NULL,
+           recovery_required = 0,
+           recovery_reason = NULL,
+           recovery_marked_at = NULL,
+           reconciled_at = SYSTIMESTAMP
+     WHERE client_id = p_client_id AND cdc = l_cdc AND environment = l_env
+       AND (l_retry_owner IS NULL OR retry_lease_owner = l_retry_owner);
+
+    IF SQL%ROWCOUNT = 0 THEN
+      raise_application_error(pkg_esign_http.c_ora_conflict,
+        'lease de conciliación inválido o documento ya reclamado por otro worker');
     END IF;
 
     SELECT JSON_OBJECT(
-             'cdc' VALUE cdc, 'estado' VALUE estado,
+             'cdc' VALUE cdc, 'estado' VALUE estado, 'cod_res' VALUE cod_res,
+             'prot_aut' VALUE prot_aut, 'mensaje_res' VALUE mensaje_res,
+             'reconciled_at' VALUE TO_CHAR(reconciled_at, 'YYYY-MM-DD"T"HH24:MI:SSTZH:TZM'),
              'recovery_required' VALUE CASE WHEN recovery_required = 1 THEN 'true' ELSE 'false' END FORMAT JSON
              RETURNING CLOB)
       INTO l_data FROM document WHERE client_id = p_client_id AND cdc = l_cdc;
@@ -840,6 +1145,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
                'total_operacion' VALUE d.total_operacion,
                'qr_url' VALUE x.qr_url,
                'xml_firmado' VALUE x.xml_firmado,
+               'xml_sha256' VALUE x.xml_sha256,
                'idempotency_key' VALUE d.idempotency_key
                RETURNING CLOB)
              ORDER BY d.retry_requested DESC, NVL(d.last_retry_at, d.fecha_emision) ASC
@@ -850,6 +1156,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
           FROM document d
          WHERE d.estado = 'FIRMADO'
            AND NVL(d.recovery_required, 0) = 0
+           AND (d.retry_lease_until IS NULL OR d.retry_lease_until < SYSTIMESTAMP)
            AND (
                  d.retry_requested = 1
                  OR (
@@ -873,6 +1180,173 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
       RAISE;
   END pr_list_pending_retry;
 
+  PROCEDURE pr_claim_pending_retry(
+    p_limit         IN NUMBER,
+    p_owner         IN VARCHAR2,
+    p_lease_seconds IN NUMBER,
+    p_max_retry     IN NUMBER,
+    p_allow_prod    IN NUMBER,
+    p_out           OUT CLOB
+  ) IS
+    TYPE t_ids IS TABLE OF document.id_document%TYPE INDEX BY PLS_INTEGER;
+    l_ids t_ids;
+    l_limit NUMBER := LEAST(GREATEST(NVL(p_limit, 50), 1), 200);
+    l_max_retry NUMBER := GREATEST(NVL(p_max_retry, 10), 1);
+    l_lease_seconds NUMBER := LEAST(GREATEST(NVL(p_lease_seconds, 360), 30), 900);
+    l_allow_prod NUMBER := NVL(p_allow_prod, 0);
+    l_owner VARCHAR2(128) := TRIM(p_owner);
+    l_data CLOB;
+  BEGIN
+    IF l_owner IS NULL THEN
+      raise_application_error(pkg_esign_http.c_ora_bad_request, 'owner es obligatorio');
+    END IF;
+
+    pkg_esign_session.begin_bootstrap;
+
+    UPDATE /*+ no_parallel */ document
+       SET recovery_required = 1,
+           recovery_reason = NVL(recovery_reason, 'supera el máximo de reintentos'),
+           recovery_marked_at = NVL(recovery_marked_at, SYSTIMESTAMP),
+           retry_requested = 0,
+           retry_lease_owner = NULL,
+           retry_lease_until = NULL
+     WHERE estado = 'FIRMADO'
+       AND NVL(recovery_required, 0) = 0
+       AND NVL(retry_count, 0) >= l_max_retry
+       AND (environment <> 'PROD' OR l_allow_prod = 1)
+       AND (retry_lease_until IS NULL OR retry_lease_until < SYSTIMESTAMP);
+
+    SELECT d.id_document BULK COLLECT INTO l_ids
+      FROM document d
+     WHERE d.estado = 'FIRMADO'
+       AND NVL(d.recovery_required, 0) = 0
+       AND NVL(d.retry_count, 0) < l_max_retry
+       AND (d.environment <> 'PROD' OR l_allow_prod = 1)
+       AND (d.retry_lease_until IS NULL OR d.retry_lease_until < SYSTIMESTAMP)
+       AND (d.retry_requested = 1 OR d.fecha_emision < SYSTIMESTAMP - NUMTODSINTERVAL(2, 'MINUTE'))
+       AND EXISTS (
+             SELECT 1 FROM document_xml x
+              WHERE x.document_id = d.id_document
+                AND x.xml_firmado IS NOT NULL)
+       AND ROWNUM <= l_limit
+     FOR UPDATE SKIP LOCKED;
+
+    IF l_ids.COUNT > 0 THEN
+      FOR i IN 1 .. l_ids.COUNT LOOP
+        UPDATE /*+ no_parallel */ document
+           SET retry_lease_owner = l_owner,
+               retry_lease_until = SYSTIMESTAMP + NUMTODSINTERVAL(l_lease_seconds, 'SECOND'),
+               retry_count = NVL(retry_count, 0) + 1,
+               last_retry_at = SYSTIMESTAMP,
+               last_retry_error = NULL
+         WHERE id_document = l_ids(i);
+      END LOOP;
+    END IF;
+
+    SELECT JSON_ARRAYAGG(
+             JSON_OBJECT(
+               'cdc' VALUE d.cdc,
+               'client_id' VALUE d.client_id,
+               'environment' VALUE d.environment,
+               'establecimiento' VALUE d.establecimiento,
+               'punto_expedicion' VALUE d.punto_expedicion,
+               'num_documento' VALUE d.num_documento,
+               'tipo_de' VALUE d.tipo_de,
+               'retry_requested' VALUE d.retry_requested,
+               'retry_count' VALUE d.retry_count,
+               'receptor_nombre' VALUE d.receptor_nombre,
+               'receptor_doc' VALUE d.receptor_doc,
+               'moneda' VALUE d.moneda,
+               'total_operacion' VALUE d.total_operacion,
+               'qr_url' VALUE x.qr_url,
+               'xml_firmado' VALUE x.xml_firmado,
+               'xml_sha256' VALUE x.xml_sha256,
+               'idempotency_key' VALUE d.idempotency_key
+               RETURNING CLOB)
+             RETURNING CLOB)
+      INTO l_data
+      FROM document d
+      JOIN document_xml x ON x.document_id = d.id_document
+     WHERE d.retry_lease_owner = l_owner;
+
+    pkg_esign_session.end_bootstrap;
+    p_out := pkg_esign_util.fn_ok(NVL(l_data, TO_CLOB('[]')));
+  EXCEPTION
+    WHEN OTHERS THEN
+      BEGIN pkg_esign_session.end_bootstrap; EXCEPTION WHEN OTHERS THEN NULL; END;
+      RAISE;
+  END pr_claim_pending_retry;
+
+  PROCEDURE pr_record_retry_failure(
+    p_client_id IN NUMBER,
+    p_cdc       IN VARCHAR2,
+    p_owner     IN VARCHAR2,
+    p_reason    IN VARCHAR2,
+    p_max_retry IN NUMBER,
+    p_out       OUT CLOB
+  ) IS
+    l_data CLOB;
+    l_recovery NUMBER;
+  BEGIN
+    pkg_esign_session.begin_bootstrap;
+    UPDATE /*+ no_parallel */ document
+       SET last_retry_error = SUBSTR(TRIM(p_reason), 1, 1000),
+           retry_lease_owner = NULL,
+           retry_lease_until = NULL,
+           retry_requested = CASE WHEN NVL(retry_count, 0) >= GREATEST(NVL(p_max_retry, 10), 1) THEN 0 ELSE retry_requested END,
+           recovery_required = CASE WHEN NVL(retry_count, 0) >= GREATEST(NVL(p_max_retry, 10), 1) THEN 1 ELSE recovery_required END,
+           recovery_reason = CASE WHEN NVL(retry_count, 0) >= GREATEST(NVL(p_max_retry, 10), 1)
+                                  THEN SUBSTR(TRIM(p_reason), 1, 500) ELSE recovery_reason END,
+           recovery_marked_at = CASE WHEN NVL(retry_count, 0) >= GREATEST(NVL(p_max_retry, 10), 1)
+                                     THEN SYSTIMESTAMP ELSE recovery_marked_at END
+     WHERE client_id = p_client_id
+       AND cdc = p_cdc
+       AND estado = 'FIRMADO'
+       AND (p_owner IS NULL OR retry_lease_owner = p_owner);
+
+    IF SQL%ROWCOUNT = 0 THEN
+      raise_application_error(pkg_esign_http.c_ora_not_found, 'documento no reclamado para registrar retry');
+    END IF;
+
+    SELECT recovery_required INTO l_recovery
+      FROM document WHERE client_id = p_client_id AND cdc = p_cdc;
+    pkg_esign_session.end_bootstrap;
+    SELECT JSON_OBJECT('cdc' VALUE p_cdc, 'recovery_required' VALUE CASE WHEN l_recovery = 1 THEN 'true' ELSE 'false' END FORMAT JSON RETURNING CLOB)
+      INTO l_data FROM dual;
+    p_out := pkg_esign_util.fn_ok(l_data);
+  EXCEPTION
+    WHEN OTHERS THEN
+      BEGIN pkg_esign_session.end_bootstrap; EXCEPTION WHEN OTHERS THEN NULL; END;
+      RAISE;
+  END pr_record_retry_failure;
+
+  PROCEDURE pr_release_pending_retry(
+    p_client_id IN NUMBER,
+    p_cdc       IN VARCHAR2,
+    p_owner     IN VARCHAR2,
+    p_out       OUT CLOB
+  ) IS
+    l_data CLOB;
+    l_released NUMBER;
+  BEGIN
+    pkg_esign_session.begin_bootstrap;
+    UPDATE /*+ no_parallel */ document
+       SET retry_lease_owner = NULL,
+           retry_lease_until = NULL
+     WHERE client_id = p_client_id
+       AND cdc = p_cdc
+       AND (p_owner IS NULL OR retry_lease_owner = p_owner);
+    l_released := SQL%ROWCOUNT;
+    pkg_esign_session.end_bootstrap;
+    SELECT JSON_OBJECT('released' VALUE CASE WHEN l_released = 1 THEN 'true' ELSE 'false' END FORMAT JSON RETURNING CLOB)
+      INTO l_data FROM dual;
+    p_out := pkg_esign_util.fn_ok(l_data);
+  EXCEPTION
+    WHEN OTHERS THEN
+      BEGIN pkg_esign_session.end_bootstrap; EXCEPTION WHEN OTHERS THEN NULL; END;
+      RAISE;
+  END pr_release_pending_retry;
+
   PROCEDURE pr_mark_retry_reconciliation(
     p_client_id IN NUMBER,
     p_cdc       IN VARCHAR2,
@@ -887,7 +1361,10 @@ CREATE OR REPLACE PACKAGE BODY pkg_esign_document_api AS
        SET recovery_required = 1,
            recovery_reason = SUBSTR(TRIM(p_reason), 1, 500),
            recovery_marked_at = SYSTIMESTAMP,
-           retry_requested = 0
+           retry_requested = 0,
+           retry_lease_owner = NULL,
+           retry_lease_until = NULL,
+           last_retry_error = SUBSTR(TRIM(p_reason), 1, 1000)
      WHERE client_id = p_client_id
        AND cdc = p_cdc
        AND estado = 'FIRMADO';

@@ -83,11 +83,15 @@ func (s *Server) reconcileDocument(ctx context.Context, clientID int, cdc string
 	if remote.Cancelado {
 		remoteState = "CANCELADO"
 	}
-	updated, err := s.resolver.ORDS().ReconcileDocument(ctx, clientID, cdc, local.Environment, remoteState, remote.CodRes, remote.ProtAut, remote.MsgRes)
+	updated, err := s.resolver.ORDS().ReconcileDocument(ctx, clientID, cdc, local.Environment, remoteState, remote.CodRes, remote.ProtAut, remote.MsgRes, "")
 	if err != nil {
 		return reconcileResponse{}, fmt.Errorf("persistir conciliación: %w", err)
 	}
 	response.Estado = updated.Estado
+	response.CodRes = updated.CodRes
+	response.ProtAut = updated.ProtAut
+	response.Mensaje = updated.MensajeRes
+	response.ReconciledAt = updated.ReconciledAt
 	response.RequiresReconciliation = updated.RecoveryRequired
 	return response, nil
 }

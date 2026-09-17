@@ -65,6 +65,7 @@ PROMPT === Migraciones incrementales ===
 @@migrations/20260905_webhook_delivery.sql
 @@migrations/20260911_restore_identity_context.sql
 @@migrations/20260917_sifen_reconciliation.sql
+@@migrations/20260918_firmador_prod_readiness.sql
 
 PROMPT === Modulos ORDS ===
 @@ords/01_esign_module.sql

@@ -253,6 +253,7 @@ type DocumentRecord struct {
 	QRURL           string `json:"qr_url"`
 	FromRetry       bool   `json:"from_retry,omitempty"`
 	RetryRequested  bool   `json:"retry_requested,omitempty"`
+	RetryLeaseOwner string `json:"retry_lease_owner,omitempty"`
 	IdempotencyKey  string `json:"idempotency_key,omitempty"`
 }
 
@@ -357,6 +358,7 @@ type PendingRetryDoc struct {
 	TotalOperacion  *float64 `json:"total_operacion"`
 	QRURL           string   `json:"qr_url"`
 	XMLFirmado      string   `json:"xml_firmado"`
+	XMLSHA256       string   `json:"xml_sha256"`
 	IdempotencyKey  string   `json:"idempotency_key"`
 }
 
@@ -365,9 +367,13 @@ type ReconcileContext struct {
 	CDC              string `json:"cdc"`
 	Environment      string `json:"environment"`
 	Estado           string `json:"estado"`
+	CodRes           string `json:"cod_res"`
+	ProtAut          string `json:"prot_aut"`
+	MensajeRes       string `json:"mensaje_res"`
 	RetryRequested   bool   `json:"retry_requested"`
 	RecoveryRequired bool   `json:"recovery_required"`
 	RecoveryReason   string `json:"recovery_reason"`
+	ReconciledAt     string `json:"reconciled_at"`
 }
 
 func (c *ORDSClient) GetReconcileContext(ctx context.Context, clientID int, cdc string) (*ReconcileContext, error) {
@@ -380,7 +386,7 @@ func (c *ORDSClient) GetReconcileContext(ctx context.Context, clientID int, cdc 
 
 // ReconcileDocument aplica un estado observado en el WS de consulta. ORDS
 // protege las transiciones terminales antes de persistirlo.
-func (c *ORDSClient) ReconcileDocument(ctx context.Context, clientID int, cdc, environment, remoteState, codRes, protAut, message string) (*ReconcileContext, error) {
+func (c *ORDSClient) ReconcileDocument(ctx context.Context, clientID int, cdc, environment, remoteState, codRes, protAut, message, retryLeaseOwner string) (*ReconcileContext, error) {
 	var out ReconcileContext
 	err := c.post(ctx, "documents/reconciliation", map[string]any{
 		"client_id":     clientID,
@@ -390,6 +396,7 @@ func (c *ORDSClient) ReconcileDocument(ctx context.Context, clientID int, cdc, e
 		"cod_res":       codRes,
 		"prot_aut":      protAut,
 		"mensaje_res":   message,
+		"retry_lease_owner": retryLeaseOwner,
 	}, &out)
 	if err != nil {
 		return nil, err
@@ -411,6 +418,38 @@ func (c *ORDSClient) ListPendingRetry(ctx context.Context, mode string, limit in
 		return []PendingRetryDoc{}, nil
 	}
 	return out, nil
+}
+
+// ClaimPendingRetry reclama atómicamente una tanda de documentos FIRMADO.
+func (c *ORDSClient) ClaimPendingRetry(ctx context.Context, limit int, owner string, leaseSeconds, maxRetry int, allowProd bool) ([]PendingRetryDoc, error) {
+	var out []PendingRetryDoc
+	allowProdValue := 0
+	if allowProd {
+		allowProdValue = 1
+	}
+	err := c.post(ctx, "documents/pending-retry/claim", map[string]any{
+		"limit": limit, "owner": owner, "lease_seconds": leaseSeconds, "max_retry": maxRetry,
+		"allow_prod": allowProdValue,
+	}, &out)
+	if err != nil {
+		return nil, err
+	}
+	if out == nil {
+		return []PendingRetryDoc{}, nil
+	}
+	return out, nil
+}
+
+func (c *ORDSClient) RecordRetryFailure(ctx context.Context, clientID int, cdc, owner, reason string, maxRetry int) error {
+	return c.post(ctx, "documents/pending-retry/failure", map[string]any{
+		"client_id": clientID, "cdc": cdc, "owner": owner, "reason": reason, "max_retry": maxRetry,
+	}, nil)
+}
+
+func (c *ORDSClient) ReleasePendingRetry(ctx context.Context, clientID int, cdc, owner string) error {
+	return c.post(ctx, "documents/pending-retry/release", map[string]any{
+		"client_id": clientID, "cdc": cdc, "owner": owner,
+	}, nil)
 }
 
 // MarkRetryReconciliationRequired detiene la reemisión automática de un DE
@@ -448,12 +487,44 @@ type EventRecord struct {
 	Estado           string `json:"estado"`
 	CodRes           string `json:"cod_res"`
 	ProtAut          string `json:"prot_aut"`
+	MensajeRes       string `json:"mensaje_res,omitempty"`
 	Motivo           string `json:"motivo"`
 	XMLFirmado       string `json:"xml_firmado,omitempty"`
 	XMLSHA256        string `json:"xml_sha256,omitempty"`
+	RequestSHA256    string `json:"request_sha256,omitempty"`
 	ResponseXML      string `json:"response_xml,omitempty"`
 	RecoveryRequired bool   `json:"recovery_required,omitempty"`
 	RecoveryReason   string `json:"recovery_reason,omitempty"`
+}
+
+type EventIdempotencyClaim struct {
+	ClaimStatus     string `json:"claim_status"`
+	EventID         string `json:"event_id"`
+	Estado          string `json:"estado"`
+	CodRes          string `json:"cod_res"`
+	ProtAut         string `json:"prot_aut"`
+	MensajeRes      string `json:"mensaje_res"`
+	Motivo          string `json:"motivo"`
+	RecoveryRequired bool  `json:"recovery_required"`
+}
+
+func (c *ORDSClient) ClaimEventIdempotency(ctx context.Context, clientID int, environment, cdc, eventID, eventType, key, motivo, requestSHA256 string) (*EventIdempotencyClaim, error) {
+	var out EventIdempotencyClaim
+	err := c.post(ctx, "events/idempotency/claim", map[string]any{
+		"client_id": clientID, "environment": environment, "cdc": cdc,
+		"event_id": eventID, "tipo_evento": eventType, "idempotency_key": key,
+		"motivo": motivo, "request_sha256": requestSHA256,
+	}, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *ORDSClient) ReleaseEventIdempotency(ctx context.Context, clientID int, environment, key string) error {
+	return c.post(ctx, "events/idempotency/release", map[string]any{
+		"client_id": clientID, "environment": environment, "idempotency_key": key,
+	}, nil)
 }
 
 func (c *ORDSClient) RegisterEvent(ctx context.Context, rec EventRecord) error {
@@ -470,6 +541,7 @@ type IdempotentEvent struct {
 	Estado           string `json:"estado"`
 	CodRes           string `json:"cod_res"`
 	ProtAut          string `json:"prot_aut"`
+	MensajeRes       string `json:"mensaje_res"`
 	Motivo           string `json:"motivo"`
 	RecoveryRequired bool   `json:"recovery_required"`
 }

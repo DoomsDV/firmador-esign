@@ -125,5 +125,6 @@ type reconcileResponse struct {
 	CodRes                 string `json:"codRes"`
 	ProtAut                string `json:"protAut,omitempty"`
 	Mensaje                string `json:"mensaje,omitempty"`
+	ReconciledAt           string `json:"reconciledAt,omitempty"`
 	RequiresReconciliation bool   `json:"requiresReconciliation"`
 }
